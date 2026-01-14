@@ -430,6 +430,7 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
   const [activeTab, setActiveTab] = useState('manual');
   const [formData, setFormData] = useState(recipe || EMPTY_RECIPE);
   const [uploadedScanImage, setUploadedScanImage] = useState(null);
+  const [uploadedFileName, setUploadedFileName] = useState(null);
   const [recipeImagePreview, setRecipeImagePreview] = useState(recipe?.imageUrl || null);
   const [imageFile, setImageFile] = useState(null);
   const [uploadingImage, setUploadingImage] = useState(false);
@@ -507,12 +508,28 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
     updateField('imageUrl', '');
   };
 
-  const handleScanImageUpload = async (e) => {
+  const handleScanFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    const isPDF = file.type === 'application/pdf';
+    const isImage = file.type.startsWith('image/');
+
+    if (!isPDF && !isImage) {
+      showNotification('Please select an image or PDF file', 'error');
+      return;
+    }
+
     setIsProcessing(true);
-    setUploadedScanImage(URL.createObjectURL(file));
+    
+    // For images, show preview. For PDFs, show file name
+    if (isImage) {
+      setUploadedScanImage(URL.createObjectURL(file));
+      setUploadedFileName(null);
+    } else {
+      setUploadedScanImage(null);
+      setUploadedFileName(file.name);
+    }
 
     try {
       const base64 = await new Promise((resolve, reject) => {
@@ -522,8 +539,8 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
         reader.readAsDataURL(file);
       });
 
-      // Call Netlify function instead of Claude directly
-      const data = await callRecipeAI('scan-image', { 
+      // Call appropriate endpoint based on file type
+      const data = await callRecipeAI(isPDF ? 'scan-pdf' : 'scan-image', { 
         imageData: base64, 
         imageType: file.type 
       });
@@ -666,7 +683,7 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
             style={activeTab === 'scan' ? styles.tabActive : styles.tab}
             onClick={() => setActiveTab('scan')}
           >
-            Scan photo
+            Scan file
           </button>
           <button
             style={activeTab === 'website' ? styles.tabActive : styles.tab}
@@ -685,17 +702,23 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
           >
             {uploadedScanImage ? (
               <img src={uploadedScanImage} alt="Uploaded" style={styles.uploadedImage} />
+            ) : uploadedFileName ? (
+              <div style={styles.pdfPreview}>
+                <div style={styles.pdfIcon}>PDF</div>
+                <p style={styles.pdfFileName}>{uploadedFileName}</p>
+              </div>
             ) : (
               <>
                 <div style={styles.scanIcon}>✦</div>
                 <h3 style={styles.scanTitle}>Scan a Recipe</h3>
                 <p style={styles.scanText}>
-                  Upload a photo of a handwritten recipe card or cookbook page.<br />
+                  Upload a photo or PDF of a recipe card, cookbook page, or document.<br />
                   We'll convert it to text for you.
                 </p>
                 <button type="button" style={styles.uploadButton}>
-                  Choose Photo
+                  Choose File
                 </button>
+                <p style={styles.fileTypes}>Supports: JPG, PNG, PDF</p>
               </>
             )}
             {isProcessing && (
@@ -708,8 +731,8 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
-            onChange={handleScanImageUpload}
+            accept="image/*,.pdf,application/pdf"
+            onChange={handleScanFileUpload}
             style={{ display: 'none' }}
           />
         </div>
@@ -1587,6 +1610,35 @@ const styles = {
     cursor: 'pointer',
   },
   uploadedImage: { maxWidth: '100%', maxHeight: 300, borderRadius: 2 },
+  pdfPreview: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 12,
+  },
+  pdfIcon: {
+    width: 80,
+    height: 100,
+    background: '#e8e6e2',
+    borderRadius: 4,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 18,
+    fontWeight: 600,
+    color: '#7a7a7a',
+    letterSpacing: 1,
+  },
+  pdfFileName: {
+    fontSize: 14,
+    color: '#5a5a5a',
+    fontWeight: 500,
+  },
+  fileTypes: {
+    fontSize: 12,
+    color: '#9a9a9a',
+    marginTop: 16,
+  },
   processingOverlay: {
     position: 'absolute',
     top: 0,

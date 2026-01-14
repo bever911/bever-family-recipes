@@ -107,6 +107,37 @@ Return ONLY valid JSON.`
           }
         ]
       }];
+    } else if (type === 'scan-pdf') {
+      // Handle PDF scanning
+      messages = [{
+        role: 'user',
+        content: [
+          { 
+            type: 'document', 
+            source: { 
+              type: 'base64', 
+              media_type: 'application/pdf', 
+              data: imageData 
+            } 
+          },
+          { 
+            type: 'text', 
+            text: `Extract the recipe from this PDF document. If there are multiple recipes, extract only the first/main one. Return JSON only:
+{
+  "title": "Recipe name",
+  "category": "one of: breakfast, main-course, side-dish, dessert, pasta, soup, salad, appetizer, bread, beverage, other",
+  "author": "who contributed it if shown",
+  "servings": "yield",
+  "prepTime": "prep time",
+  "cookTime": "cook time", 
+  "ingredients": [{"amount": "1 cup", "ingredient": "flour"}, ...],
+  "instructions": ["Step 1 text", "Step 2 text", ...],
+  "notes": "any notes or tips"
+}
+Return ONLY valid JSON.` 
+          }
+        ]
+      }];
     } else if (type === 'extract-website' || type === 'fetch-url') {
       // Handle website content extraction
       messages = [{

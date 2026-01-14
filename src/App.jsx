@@ -775,13 +775,22 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
           </div>
         )}
 
-        {/* Triple-click area to show admin tools */}
-        <div 
-          style={{ height: 20, cursor: 'default' }} 
-          onClick={(e) => {
-            if (e.detail === 3) setShowAdminTools(!showAdminTools);
-          }}
-        />
+        {/* Admin tools toggle */}
+        <div style={{ textAlign: 'center', marginTop: 32 }}>
+          <button 
+            onClick={() => setShowAdminTools(!showAdminTools)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#c9c4bc',
+              fontSize: 11,
+              cursor: 'pointer',
+              letterSpacing: 1,
+            }}
+          >
+            {showAdminTools ? '✕ Hide Tools' : '⚙ Admin Tools'}
+          </button>
+        </div>
       </section>
     </div>
   );

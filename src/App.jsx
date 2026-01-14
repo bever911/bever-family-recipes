@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, getDocs } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 
 // ============================================
@@ -57,6 +57,232 @@ const EMPTY_RECIPE = {
   imageUrl: '',
   dateAdded: '',
   comments: [],
+};
+
+// Target aspect ratio for images (4:3)
+const TARGET_ASPECT_RATIO = 4 / 3;
+
+// ============================================
+// UNIT NORMALIZATION
+// ============================================
+const UNIT_MAPPINGS = {
+  // Volume
+  'tablespoons': 'tbsp', 'tablespoon': 'tbsp', 'tbsps': 'tbsp', 'tbs': 'tbsp', 'T': 'tbsp',
+  'teaspoons': 'tsp', 'teaspoon': 'tsp', 'tsps': 'tsp', 't': 'tsp',
+  'cups': 'cup', 'c': 'cup', 'C': 'cup',
+  'ounces': 'oz', 'ounce': 'oz', 'ozs': 'oz',
+  'fluid ounces': 'fl oz', 'fluid ounce': 'fl oz', 'fl. oz.': 'fl oz', 'fl. oz': 'fl oz',
+  'pints': 'pint', 'pt': 'pint', 'pts': 'pint',
+  'quarts': 'quart', 'qt': 'quart', 'qts': 'quart',
+  'gallons': 'gallon', 'gal': 'gallon', 'gals': 'gallon',
+  'milliliters': 'ml', 'milliliter': 'ml', 'mls': 'ml', 'mL': 'ml',
+  'liters': 'liter', 'litre': 'liter', 'litres': 'liter', 'l': 'liter', 'L': 'liter',
+  // Weight
+  'pounds': 'lb', 'pound': 'lb', 'lbs': 'lb', 'lb.': 'lb',
+  'grams': 'g', 'gram': 'g', 'gr': 'g',
+  'kilograms': 'kg', 'kilogram': 'kg', 'kgs': 'kg',
+  // Count/Other
+  'pieces': 'piece', 'pcs': 'piece', 'pc': 'piece',
+  'slices': 'slice',
+  'cloves': 'clove',
+  'heads': 'head',
+  'bunches': 'bunch',
+  'cans': 'can',
+  'packages': 'package', 'pkgs': 'package', 'pkg': 'package',
+  'sticks': 'stick',
+  'pinches': 'pinch',
+  'dashes': 'dash',
+  'sprigs': 'sprig',
+  'stalks': 'stalk',
+  'leaves': 'leaf',
+  // Size descriptors
+  'large': 'large', 'lg': 'large',
+  'medium': 'medium', 'med': 'medium',
+  'small': 'small', 'sm': 'small',
+};
+
+const normalizeUnit = (unit) => {
+  if (!unit) return '';
+  const trimmed = unit.trim().toLowerCase();
+  return UNIT_MAPPINGS[trimmed] || UNIT_MAPPINGS[unit.trim()] || unit.trim();
+};
+
+// ============================================
+// INGREDIENT PARSING
+// ============================================
+const FRACTION_MAP = {
+  '½': 0.5, '⅓': 0.333, '⅔': 0.667, '¼': 0.25, '¾': 0.75,
+  '⅕': 0.2, '⅖': 0.4, '⅗': 0.6, '⅘': 0.8,
+  '⅙': 0.167, '⅚': 0.833, '⅛': 0.125, '⅜': 0.375, '⅝': 0.625, '⅞': 0.875,
+  '1/2': 0.5, '1/3': 0.333, '2/3': 0.667, '1/4': 0.25, '3/4': 0.75,
+  '1/8': 0.125, '3/8': 0.375, '5/8': 0.625, '7/8': 0.875,
+};
+
+const UNITS_PATTERN = [
+  'tablespoons?', 'tbsps?', 'tbs', 'T',
+  'teaspoons?', 'tsps?', 't',
+  'cups?', 'c',
+  'ounces?', 'ozs?', 'oz',
+  'fluid ounces?', 'fl\\.? ?oz\\.?',
+  'pints?', 'pts?',
+  'quarts?', 'qts?',
+  'gallons?', 'gals?',
+  'milliliters?', 'mls?', 'mL',
+  'liters?', 'litres?', 'L', 'l',
+  'pounds?', 'lbs?\\.?',
+  'grams?', 'g', 'gr',
+  'kilograms?', 'kgs?', 'kg',
+  'pieces?', 'pcs?', 'pc',
+  'slices?', 'cloves?', 'heads?', 'bunches?', 'bunch',
+  'cans?', 'packages?', 'pkgs?', 'pkg',
+  'sticks?', 'pinch(?:es)?', 'dash(?:es)?',
+  'sprigs?', 'stalks?', 'leaves?', 'leaf',
+  'large', 'lg', 'medium', 'med', 'small', 'sm',
+].join('|');
+
+const parseIngredientString = (str) => {
+  if (!str || typeof str !== 'string') return { quantity: '', unit: '', item: str || '' };
+  
+  const original = str.trim();
+  let remaining = original;
+  let quantity = '';
+  let unit = '';
+  let item = '';
+  
+  // Match quantity at the start (handles "2", "2.5", "2 1/2", "2½", "½", etc.)
+  const qtyMatch = remaining.match(/^(\d+(?:\.\d+)?)\s*([\u00BC-\u00BE\u2150-\u215E]|[1-9]\/[1-9])?\s*|^([\u00BC-\u00BE\u2150-\u215E]|[1-9]\/[1-9])\s*/);
+  
+  if (qtyMatch) {
+    if (qtyMatch[1]) {
+      // Whole number possibly with fraction
+      let num = parseFloat(qtyMatch[1]);
+      if (qtyMatch[2]) {
+        num += FRACTION_MAP[qtyMatch[2]] || 0;
+      }
+      quantity = num;
+    } else if (qtyMatch[3]) {
+      // Just a fraction
+      quantity = FRACTION_MAP[qtyMatch[3]] || qtyMatch[3];
+    }
+    remaining = remaining.slice(qtyMatch[0].length).trim();
+  }
+  
+  // Match unit
+  const unitRegex = new RegExp(`^(${UNITS_PATTERN})\\.?\\s+`, 'i');
+  const unitMatch = remaining.match(unitRegex);
+  
+  if (unitMatch) {
+    unit = normalizeUnit(unitMatch[1]);
+    remaining = remaining.slice(unitMatch[0].length).trim();
+  }
+  
+  // Everything else is the item
+  item = remaining;
+  
+  return { quantity: quantity.toString(), unit, item };
+};
+
+const formatIngredient = (parsed) => {
+  const parts = [];
+  if (parsed.quantity) parts.push(parsed.quantity);
+  if (parsed.unit) parts.push(parsed.unit);
+  if (parsed.item) parts.push(parsed.item);
+  return parts.join(' ');
+};
+
+// ============================================
+// METADATA INFERENCE
+// ============================================
+const TIME_PATTERNS = [
+  /(?:bake|cook|roast|simmer|boil|fry|sauté|grill|broil|steam)\s+(?:for\s+)?(?:about\s+)?(\d+)\s*(?:to|-)\s*(\d+)\s*(minutes?|mins?|hours?|hrs?)/i,
+  /(?:bake|cook|roast|simmer|boil|fry|sauté|grill|broil|steam)\s+(?:for\s+)?(?:about\s+)?(\d+)\s*(minutes?|mins?|hours?|hrs?)/i,
+  /(\d+)\s*(?:to|-)\s*(\d+)\s*(minutes?|mins?|hours?|hrs?)\s+(?:or\s+)?(?:until)/i,
+  /(\d+)\s*(minutes?|mins?|hours?|hrs?)\s+(?:or\s+)?(?:until)/i,
+  /(?:for\s+)(\d+)\s*(?:to|-)\s*(\d+)\s*(minutes?|mins?|hours?|hrs?)/i,
+  /(?:for\s+)(\d+)\s*(minutes?|mins?|hours?|hrs?)/i,
+];
+
+const extractCookTimeFromInstructions = (instructions) => {
+  if (!instructions || !Array.isArray(instructions)) return null;
+  
+  const allText = instructions.join(' ');
+  
+  for (const pattern of TIME_PATTERNS) {
+    const match = allText.match(pattern);
+    if (match) {
+      const isHours = /hours?|hrs?/i.test(match[match.length - 1]);
+      
+      if (match[2] && !isNaN(match[2]) && match[1] && !isNaN(match[1])) {
+        // Range like "20-25 minutes"
+        const avg = Math.round((parseInt(match[1]) + parseInt(match[2])) / 2);
+        return isHours ? `${avg} hours` : `${avg} min`;
+      } else if (match[1] && !isNaN(match[1])) {
+        // Single value
+        const time = parseInt(match[1]);
+        return isHours ? `${time} hour${time > 1 ? 's' : ''}` : `${time} min`;
+      }
+    }
+  }
+  
+  return null;
+};
+
+// ============================================
+// IMAGE PROCESSING
+// ============================================
+const processImageForUpload = (file) => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    img.onload = () => {
+      const srcWidth = img.width;
+      const srcHeight = img.height;
+      const srcRatio = srcWidth / srcHeight;
+      
+      // Target dimensions (max 1200px wide, maintain 4:3 ratio)
+      const maxWidth = 1200;
+      const targetWidth = Math.min(srcWidth, maxWidth);
+      const targetHeight = targetWidth / TARGET_ASPECT_RATIO;
+      
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      
+      // Fill with a subtle background color for letterboxing
+      ctx.fillStyle = '#f5f3ef';
+      ctx.fillRect(0, 0, targetWidth, targetHeight);
+      
+      let drawWidth, drawHeight, drawX, drawY;
+      
+      if (srcRatio > TARGET_ASPECT_RATIO) {
+        // Image is wider than target - fit to width, letterbox top/bottom
+        drawWidth = targetWidth;
+        drawHeight = targetWidth / srcRatio;
+        drawX = 0;
+        drawY = (targetHeight - drawHeight) / 2;
+      } else {
+        // Image is taller than target - fit to height, letterbox sides
+        drawHeight = targetHeight;
+        drawWidth = targetHeight * srcRatio;
+        drawX = (targetWidth - drawWidth) / 2;
+        drawY = 0;
+      }
+      
+      ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+      
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(new File([blob], file.name, { type: 'image/jpeg' }));
+        } else {
+          reject(new Error('Failed to process image'));
+        }
+      }, 'image/jpeg', 0.85);
+    };
+    
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = URL.createObjectURL(file);
+  });
 };
 
 // ============================================
@@ -128,10 +354,43 @@ export default function App() {
     setTimeout(() => setNotification(null), 3000);
   };
 
+  // Normalize ingredients before saving
+  const normalizeRecipeData = (recipe) => {
+    const normalized = { ...recipe };
+    
+    // Normalize ingredients
+    if (Array.isArray(normalized.ingredients)) {
+      normalized.ingredients = normalized.ingredients.map(ing => {
+        if (typeof ing === 'string') {
+          // Parse string ingredient
+          const parsed = parseIngredientString(ing);
+          return { amount: `${parsed.quantity} ${parsed.unit}`.trim(), ingredient: parsed.item };
+        } else if (ing.amount && ing.ingredient) {
+          // Normalize existing structured ingredient
+          const amountParsed = parseIngredientString(ing.amount + ' ' + ing.ingredient);
+          return { 
+            amount: `${amountParsed.quantity} ${amountParsed.unit}`.trim(), 
+            ingredient: amountParsed.item 
+          };
+        }
+        return ing;
+      });
+    }
+    
+    // Infer cook time if missing
+    if (!normalized.cookTime && Array.isArray(normalized.instructions)) {
+      const inferredTime = extractCookTimeFromInstructions(normalized.instructions);
+      if (inferredTime) {
+        normalized.cookTime = inferredTime;
+      }
+    }
+    
+    return normalized;
+  };
+
   const saveRecipe = async (recipe) => {
     try {
-      // Remove id from the data being saved (it's the doc reference, not a field)
-      const { id, ...recipeData } = recipe;
+      const { id, ...recipeData } = normalizeRecipeData(recipe);
       
       if (id) {
         await updateDoc(doc(db, 'recipes', id), recipeData);
@@ -145,6 +404,34 @@ export default function App() {
     } catch (error) {
       console.error('Save error:', error);
       showNotification('Error saving recipe: ' + error.message, 'error');
+    }
+  };
+
+  // Normalize all existing recipes (one-time migration)
+  const normalizeAllRecipes = async () => {
+    if (!confirm('This will normalize all existing recipe data (units, ingredients). Continue?')) return;
+    
+    setIsProcessing(true);
+    let updated = 0;
+    
+    try {
+      for (const recipe of recipes) {
+        const normalized = normalizeRecipeData(recipe);
+        const { id, ...data } = normalized;
+        
+        // Check if anything changed
+        const changed = JSON.stringify(recipe) !== JSON.stringify(normalized);
+        if (changed && id) {
+          await updateDoc(doc(db, 'recipes', id), data);
+          updated++;
+        }
+      }
+      showNotification(`Normalized ${updated} recipes`);
+    } catch (error) {
+      console.error('Normalize error:', error);
+      showNotification('Error normalizing recipes', 'error');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -207,10 +494,13 @@ export default function App() {
     if (!file) return null;
     
     try {
-      const fileName = `recipes/${Date.now()}_${file.name}`;
+      // Process image to consistent aspect ratio
+      const processedFile = await processImageForUpload(file);
+      
+      const fileName = `recipes/${Date.now()}_${file.name.replace(/\.[^.]+$/, '.jpg')}`;
       const imageRef = ref(storage, fileName);
       
-      await uploadBytes(imageRef, file);
+      await uploadBytes(imageRef, processedFile);
       return await getDownloadURL(imageRef);
     } catch (error) {
       console.error('Upload error:', error);
@@ -230,11 +520,18 @@ export default function App() {
     showNotification('Recipes exported!');
   };
 
+  // Updated search to include comments
   const filteredRecipes = recipes.filter(recipe => {
+    const query = searchQuery.toLowerCase();
     const matchesSearch = !searchQuery || 
-      recipe.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      recipe.ingredients?.some(i => i.ingredient?.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      recipe.author?.toLowerCase().includes(searchQuery.toLowerCase());
+      recipe.title?.toLowerCase().includes(query) ||
+      recipe.ingredients?.some(i => i.ingredient?.toLowerCase().includes(query)) ||
+      recipe.author?.toLowerCase().includes(query) ||
+      recipe.notes?.toLowerCase().includes(query) ||
+      recipe.comments?.some(c => 
+        c.text?.toLowerCase().includes(query) || 
+        c.author?.toLowerCase().includes(query)
+      );
     const matchesCategory = selectedCategory === 'all' || recipe.category === selectedCategory;
     const matchesAuthor = selectedAuthor === 'all' || recipe.author === selectedAuthor;
     return matchesSearch && matchesCategory && matchesAuthor;
@@ -262,7 +559,7 @@ export default function App() {
         </div>
       )}
 
-      <header style={styles.header}>
+      <header style={styles.header} className="no-print">
         <div style={styles.headerInner}>
           <div 
             style={styles.logo} 
@@ -313,6 +610,8 @@ export default function App() {
             setSearchQuery={setSearchQuery}
             setSelectedRecipe={(r) => navigateTo('view', r)}
             setView={navigateTo}
+            onNormalizeAll={normalizeAllRecipes}
+            isProcessing={isProcessing}
           />
         )}
 
@@ -346,7 +645,7 @@ export default function App() {
         )}
       </main>
 
-      <footer style={styles.footer}>
+      <footer style={styles.footer} className="no-print">
         <div style={styles.footerContent}>
           <span style={styles.footerLogo}>BF</span>
           <p style={styles.footerText}>Bever Family Recipes</p>
@@ -360,10 +659,12 @@ export default function App() {
 // ============================================
 // HOME PAGE
 // ============================================
-function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setSelectedCategory, authors, selectedAuthor, setSelectedAuthor, searchQuery, setSearchQuery, setSelectedRecipe, setView }) {
+function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setSelectedCategory, authors, selectedAuthor, setSelectedAuthor, searchQuery, setSearchQuery, setSelectedRecipe, setView, onNormalizeAll, isProcessing }) {
+  const [showAdminTools, setShowAdminTools] = useState(false);
+
   return (
     <div>
-      <section style={styles.hero}>
+      <section style={styles.hero} className="no-print">
         <div style={styles.heroContent}>
           <p style={styles.heroWelcome}>Welcome to the</p>
           <h1 style={styles.heroTitle}>Bever Family Recipes</h1>
@@ -380,7 +681,7 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
           <div style={styles.searchContainer}>
             <input
               type="text"
-              placeholder="Search recipes..."
+              placeholder="Search recipes, ingredients, notes..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               style={styles.searchInput}
@@ -413,7 +714,7 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
         </div>
       </section>
 
-      <section style={styles.categorySection}>
+      <section style={styles.categorySection} className="no-print">
         <div style={styles.categoryPills}>
           {categories.map(cat => (
             <button
@@ -435,6 +736,16 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
           </h2>
           <span style={styles.recipeCount}>{filteredRecipes.length} {filteredRecipes.length === 1 ? 'recipe' : 'recipes'}</span>
         </div>
+
+        {/* Hidden admin tools - triple click footer to show */}
+        {showAdminTools && (
+          <div style={styles.adminTools} className="no-print">
+            <button onClick={onNormalizeAll} disabled={isProcessing} style={styles.adminBtn}>
+              {isProcessing ? 'Processing...' : 'Normalize All Recipes'}
+            </button>
+            <span style={styles.adminHint}>Standardizes units & infers cook times</span>
+          </div>
+        )}
         
         {filteredRecipes.length > 0 ? (
           <div style={styles.recipeGrid}>
@@ -463,6 +774,14 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
             )}
           </div>
         )}
+
+        {/* Triple-click area to show admin tools */}
+        <div 
+          style={{ height: 20, cursor: 'default' }} 
+          onClick={(e) => {
+            if (e.detail === 3) setShowAdminTools(!showAdminTools);
+          }}
+        />
       </section>
     </div>
   );
@@ -1142,7 +1461,7 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
 
   return (
     <div style={styles.detailPage}>
-      <div style={styles.detailNav}>
+      <div style={styles.detailNav} className="no-print">
         <button onClick={onBack} style={styles.backBtn}>← Back to recipes</button>
         <div style={styles.detailActions}>
           <button onClick={() => window.print()} style={styles.actionBtn}>Print</button>
@@ -1151,9 +1470,9 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
         </div>
       </div>
 
-      <article style={styles.recipeDetail}>
+      <article style={styles.recipeDetail} className="print-recipe">
         {recipe.imageUrl && !imageError && (
-          <div style={styles.detailImageWrap}>
+          <div style={styles.detailImageWrap} className="print-image">
             <img 
               src={recipe.imageUrl} 
               alt={recipe.title}
@@ -1211,7 +1530,7 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
             </section>
           )}
 
-          <section style={styles.commentsSection}>
+          <section style={styles.commentsSection} className="no-print">
             <div style={styles.commentsSectionHeader}>
               <h3 style={styles.commentsTitle}>
                 Family Notes & Reviews ({recipe.comments?.length || 0})
@@ -1606,6 +1925,30 @@ const styles = {
     letterSpacing: 1,
     textTransform: 'uppercase',
     cursor: 'pointer',
+  },
+
+  adminTools: {
+    marginBottom: 24,
+    padding: 16,
+    background: '#f5f3ef',
+    borderRadius: 4,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 16,
+  },
+  adminBtn: {
+    padding: '10px 20px',
+    background: '#5c6d5e',
+    color: 'white',
+    border: 'none',
+    borderRadius: 2,
+    fontSize: 12,
+    cursor: 'pointer',
+  },
+  adminHint: {
+    fontSize: 12,
+    color: '#7a7a7a',
+    fontStyle: 'italic',
   },
 
   footer: {
@@ -2237,14 +2580,186 @@ const styles = {
   },
 };
 
-// Responsive overrides
+// ============================================
+// GLOBAL STYLES (Print, Mobile, Animations)
+// ============================================
 if (typeof window !== 'undefined') {
   const style = document.createElement('style');
   style.textContent = `
+    /* Animations */
     @keyframes spin { to { transform: rotate(360deg); } }
+    
+    /* Mobile Styles */
     @media (max-width: 768px) {
-      .formRow, .formRow3 { grid-template-columns: 1fr !important; }
-      .detailBody { grid-template-columns: 1fr !important; }
+      header > div {
+        padding: 16px 20px !important;
+        flex-direction: column !important;
+        gap: 16px !important;
+      }
+      
+      nav {
+        width: 100%;
+        justify-content: center !important;
+      }
+      
+      section[style*="hero"] {
+        padding: 40px 20px !important;
+      }
+      
+      section[style*="hero"] h1 {
+        font-size: 32px !important;
+      }
+      
+      section[style*="categorySection"] {
+        padding: 16px 12px !important;
+      }
+      
+      section[style*="categorySection"] > div {
+        justify-content: flex-start !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 8px;
+      }
+      
+      section[style*="recipeSection"] {
+        padding: 24px 16px !important;
+      }
+      
+      div[style*="recipeGrid"] {
+        grid-template-columns: 1fr !important;
+        gap: 20px !important;
+      }
+      
+      div[style*="formRow"], div[style*="formRow3"] {
+        grid-template-columns: 1fr !important;
+      }
+      
+      div[style*="detailBody"] {
+        grid-template-columns: 1fr !important;
+        gap: 32px !important;
+      }
+      
+      div[style*="detailContent"] {
+        padding: 24px 16px !important;
+      }
+      
+      h1[style*="detailTitle"] {
+        font-size: 28px !important;
+      }
+      
+      div[style*="detailImageWrap"] {
+        height: 250px !important;
+      }
+      
+      form[style*="form"] {
+        padding: 24px 16px !important;
+      }
+      
+      div[style*="addPage"] {
+        padding: 24px 16px !important;
+      }
+      
+      footer {
+        padding: 32px 20px !important;
+      }
+      
+      div[style*="ingredientRow"] {
+        flex-wrap: wrap;
+      }
+      
+      input[style*="amountInput"] {
+        width: 80px !important;
+        flex-shrink: 0;
+      }
+    }
+    
+    /* Print Styles */
+    @media print {
+      body {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      
+      .no-print {
+        display: none !important;
+      }
+      
+      .print-recipe {
+        border: none !important;
+        box-shadow: none !important;
+        max-width: 100% !important;
+      }
+      
+      .print-image {
+        height: 200px !important;
+        page-break-inside: avoid;
+      }
+      
+      div[style*="detailPage"] {
+        padding: 0 !important;
+        max-width: 100% !important;
+      }
+      
+      div[style*="detailContent"] {
+        padding: 20px !important;
+      }
+      
+      div[style*="detailBody"] {
+        display: block !important;
+      }
+      
+      section[style*="ingredientsCol"] {
+        margin-bottom: 24px;
+        page-break-inside: avoid;
+      }
+      
+      section[style*="instructionsCol"] {
+        page-break-inside: avoid;
+      }
+      
+      h1[style*="detailTitle"] {
+        font-size: 24px !important;
+        margin-bottom: 8px !important;
+      }
+      
+      div[style*="detailMeta"] {
+        margin-bottom: 16px;
+      }
+      
+      section[style*="notesBox"] {
+        margin-top: 24px !important;
+        padding: 16px !important;
+        page-break-inside: avoid;
+      }
+      
+      li[style*="ingredientItem"] {
+        padding: 4px 0 !important;
+        font-size: 12px !important;
+      }
+      
+      li[style*="instructionItem"] {
+        padding: 6px 0 !important;
+        font-size: 12px !important;
+        line-height: 1.5 !important;
+      }
+      
+      h2[style*="colTitle"] {
+        font-size: 10px !important;
+        margin-bottom: 12px !important;
+        padding-bottom: 8px !important;
+      }
+      
+      /* Hide divider on print */
+      div[style*="detailDivider"] {
+        margin: 16px 0 !important;
+      }
+      
+      /* Ensure single page fit */
+      @page {
+        margin: 0.5in;
+        size: letter;
+      }
     }
   `;
   document.head.appendChild(style);

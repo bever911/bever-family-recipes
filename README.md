@@ -33,7 +33,6 @@ On your new repo page, click **"uploading an existing file"** link, then:
 1. In Netlify, go to **Site configuration** → **Environment variables**
 2. Click **Add a variable**
 3. Key: `ANTHROPIC_API_KEY`
-4. Value: `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`
 5. Click **Create variable**
 6. Go to **Deploys** → **Trigger deploy** → **Deploy site**
 

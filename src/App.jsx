@@ -56,6 +56,7 @@ const EMPTY_RECIPE = {
   notes: '',
   imageUrl: '',
   dateAdded: '',
+  comments: [],
 };
 
 // ============================================
@@ -85,13 +86,16 @@ export default function App() {
   const [view, setView] = useState('home');
   const [selectedRecipe, setSelectedRecipe] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const [selectedAuthor, setSelectedAuthor] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [notification, setNotification] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Get unique authors from recipes
+  const authors = ['all', ...new Set(recipes.map(r => r.author).filter(Boolean))];
+
   useEffect(() => {
-    // Set up real-time listener for recipes
     const q = query(collection(db, 'recipes'), orderBy('dateAdded', 'desc'));
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -109,6 +113,16 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Clear search when changing views
+  const navigateTo = (newView, recipe = null) => {
+    if (newView !== 'home') {
+      setSearchQuery('');
+      setSelectedAuthor('all');
+    }
+    setSelectedRecipe(recipe);
+    setView(newView);
+  };
+
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 3000);
@@ -116,25 +130,61 @@ export default function App() {
 
   const saveRecipe = async (recipe) => {
     try {
-      if (recipe.id) {
-        await updateDoc(doc(db, 'recipes', recipe.id), recipe);
+      // Remove id from the data being saved (it's the doc reference, not a field)
+      const { id, ...recipeData } = recipe;
+      
+      if (id) {
+        await updateDoc(doc(db, 'recipes', id), recipeData);
         showNotification('Recipe updated');
       } else {
-        const newRecipe = { ...recipe, dateAdded: new Date().toISOString() };
-        delete newRecipe.id;
+        const newRecipe = { ...recipeData, dateAdded: new Date().toISOString() };
         await addDoc(collection(db, 'recipes'), newRecipe);
         showNotification('Recipe saved');
       }
-      setView('home');
+      navigateTo('home');
     } catch (error) {
       console.error('Save error:', error);
-      showNotification('Error saving recipe', 'error');
+      showNotification('Error saving recipe: ' + error.message, 'error');
+    }
+  };
+
+  const addComment = async (recipeId, comment) => {
+    try {
+      const recipe = recipes.find(r => r.id === recipeId);
+      if (!recipe) return;
+      
+      const newComment = {
+        id: Date.now().toString(),
+        text: comment.text,
+        author: comment.author,
+        date: new Date().toISOString()
+      };
+      
+      const updatedComments = [...(recipe.comments || []), newComment];
+      await updateDoc(doc(db, 'recipes', recipeId), { comments: updatedComments });
+      showNotification('Comment added');
+    } catch (error) {
+      console.error('Comment error:', error);
+      showNotification('Error adding comment', 'error');
+    }
+  };
+
+  const deleteComment = async (recipeId, commentId) => {
+    try {
+      const recipe = recipes.find(r => r.id === recipeId);
+      if (!recipe) return;
+      
+      const updatedComments = (recipe.comments || []).filter(c => c.id !== commentId);
+      await updateDoc(doc(db, 'recipes', recipeId), { comments: updatedComments });
+      showNotification('Comment removed');
+    } catch (error) {
+      console.error('Delete comment error:', error);
+      showNotification('Error removing comment', 'error');
     }
   };
 
   const deleteRecipe = async (recipeId, imageUrl) => {
     try {
-      // Delete image from storage if it's a Firebase URL
       if (imageUrl && imageUrl.includes('firebasestorage')) {
         try {
           const imageRef = ref(storage, imageUrl);
@@ -146,7 +196,7 @@ export default function App() {
       
       await deleteDoc(doc(db, 'recipes', recipeId));
       showNotification('Recipe removed');
-      setView('home');
+      navigateTo('home');
     } catch (error) {
       console.error('Delete error:', error);
       showNotification('Error deleting recipe', 'error');
@@ -168,13 +218,26 @@ export default function App() {
     }
   };
 
+  const exportRecipes = () => {
+    const dataStr = JSON.stringify(recipes, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'bever-family-recipes.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    showNotification('Recipes exported!');
+  };
+
   const filteredRecipes = recipes.filter(recipe => {
     const matchesSearch = !searchQuery || 
       recipe.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       recipe.ingredients?.some(i => i.ingredient?.toLowerCase().includes(searchQuery.toLowerCase())) ||
       recipe.author?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = selectedCategory === 'all' || recipe.category === selectedCategory;
-    return matchesSearch && matchesCategory;
+    const matchesAuthor = selectedAuthor === 'all' || recipe.author === selectedAuthor;
+    return matchesSearch && matchesCategory && matchesAuthor;
   });
 
   if (loading) {
@@ -203,7 +266,7 @@ export default function App() {
         <div style={styles.headerInner}>
           <div 
             style={styles.logo} 
-            onClick={() => { setView('home'); setSelectedCategory('all'); setSearchQuery(''); }}
+            onClick={() => { navigateTo('home'); setSelectedCategory('all'); }}
           >
             <span style={styles.logoMark}>BF</span>
             <div style={styles.logoText}>
@@ -214,21 +277,22 @@ export default function App() {
           <nav style={styles.nav}>
             <button 
               style={view === 'home' ? styles.navLinkActive : styles.navLink}
-              onClick={() => setView('home')}
+              onClick={() => navigateTo('home')}
             >
               Recipes
             </button>
             <button 
               style={view === 'add' ? styles.navLinkActive : styles.navLink}
-              onClick={() => { setView('add'); setSelectedRecipe(null); }}
+              onClick={() => navigateTo('add')}
             >
               Add New
             </button>
             <button 
-              style={view === 'book' ? styles.navLinkActive : styles.navLink}
-              onClick={() => setView('book')}
+              style={styles.navLink}
+              onClick={exportRecipes}
+              title="Export all recipes as JSON"
             >
-              Cookbook
+              Export
             </button>
           </nav>
         </div>
@@ -242,10 +306,13 @@ export default function App() {
             categories={categories}
             selectedCategory={selectedCategory}
             setSelectedCategory={setSelectedCategory}
+            authors={authors}
+            selectedAuthor={selectedAuthor}
+            setSelectedAuthor={setSelectedAuthor}
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
-            setSelectedRecipe={setSelectedRecipe}
-            setView={setView}
+            setSelectedRecipe={(r) => navigateTo('view', r)}
+            setView={navigateTo}
           />
         )}
 
@@ -254,7 +321,7 @@ export default function App() {
             recipe={selectedRecipe}
             categories={categories.filter(c => c.id !== 'all')}
             onSave={saveRecipe}
-            onCancel={() => setView(selectedRecipe ? 'view' : 'home')}
+            onCancel={() => navigateTo(selectedRecipe ? 'view' : 'home', selectedRecipe)}
             isProcessing={isProcessing}
             setIsProcessing={setIsProcessing}
             showNotification={showNotification}
@@ -264,23 +331,17 @@ export default function App() {
 
         {view === 'view' && selectedRecipe && (
           <RecipeDetailPage
-            recipe={selectedRecipe}
+            recipe={recipes.find(r => r.id === selectedRecipe.id) || selectedRecipe}
             categories={categories}
-            onEdit={() => setView('edit')}
+            onEdit={() => navigateTo('edit', selectedRecipe)}
             onDelete={() => {
               if (confirm('Remove this recipe from the collection?')) {
                 deleteRecipe(selectedRecipe.id, selectedRecipe.imageUrl);
               }
             }}
-            onBack={() => setView('home')}
-          />
-        )}
-
-        {view === 'book' && (
-          <BookPage
-            recipes={recipes}
-            categories={categories}
-            showNotification={showNotification}
+            onBack={() => navigateTo('home')}
+            onAddComment={(comment) => addComment(selectedRecipe.id, comment)}
+            onDeleteComment={(commentId) => deleteComment(selectedRecipe.id, commentId)}
           />
         )}
       </main>
@@ -299,10 +360,9 @@ export default function App() {
 // ============================================
 // HOME PAGE
 // ============================================
-function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setSelectedCategory, searchQuery, setSearchQuery, setSelectedRecipe, setView }) {
+function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setSelectedCategory, authors, selectedAuthor, setSelectedAuthor, searchQuery, setSearchQuery, setSelectedRecipe, setView }) {
   return (
     <div>
-      {/* Hero Section */}
       <section style={styles.hero}>
         <div style={styles.heroContent}>
           <p style={styles.heroWelcome}>Welcome to the</p>
@@ -317,7 +377,6 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
             From our kitchen to yours.
           </p>
           
-          {/* Search */}
           <div style={styles.searchContainer}>
             <input
               type="text"
@@ -326,14 +385,37 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
               onChange={(e) => setSearchQuery(e.target.value)}
               style={styles.searchInput}
             />
+            {searchQuery && (
+              <button 
+                style={styles.clearSearch}
+                onClick={() => setSearchQuery('')}
+              >
+                ×
+              </button>
+            )}
           </div>
+
+          {authors.length > 2 && (
+            <div style={styles.authorFilter}>
+              <label style={styles.authorLabel}>Recipe from:</label>
+              <select
+                value={selectedAuthor}
+                onChange={(e) => setSelectedAuthor(e.target.value)}
+                style={styles.authorSelect}
+              >
+                <option value="all">Everyone</option>
+                {authors.filter(a => a !== 'all').map(author => (
+                  <option key={author} value={author}>{author}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </section>
 
-      {/* Category Pills */}
       <section style={styles.categorySection}>
         <div style={styles.categoryPills}>
-          {categories.slice(0, 8).map(cat => (
+          {categories.map(cat => (
             <button
               key={cat.id}
               style={selectedCategory === cat.id ? styles.categoryPillActive : styles.categoryPill}
@@ -345,11 +427,11 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
         </div>
       </section>
 
-      {/* Recipe Grid */}
       <section style={styles.recipeSection}>
         <div style={styles.sectionHeader}>
           <h2 style={styles.sectionTitle}>
             {selectedCategory === 'all' ? 'All Recipes' : categories.find(c => c.id === selectedCategory)?.name}
+            {selectedAuthor !== 'all' && ` from ${selectedAuthor}`}
           </h2>
           <span style={styles.recipeCount}>{filteredRecipes.length} {filteredRecipes.length === 1 ? 'recipe' : 'recipes'}</span>
         </div>
@@ -361,20 +443,24 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
                 key={recipe.id}
                 recipe={recipe}
                 categories={categories}
-                onClick={() => { setSelectedRecipe(recipe); setView('view'); }}
+                onClick={() => setSelectedRecipe(recipe)}
               />
             ))}
           </div>
         ) : (
           <div style={styles.emptyState}>
             <div style={styles.emptyIcon}>✦</div>
-            <h3 style={styles.emptyTitle}>No recipes yet</h3>
+            <h3 style={styles.emptyTitle}>No recipes found</h3>
             <p style={styles.emptyText}>
-              Start your family's collection by adding the first recipe.
+              {searchQuery || selectedAuthor !== 'all' 
+                ? 'Try adjusting your search or filters.'
+                : 'Start your family\'s collection by adding the first recipe.'}
             </p>
-            <button style={styles.emptyButton} onClick={() => setView('add')}>
-              Add a Recipe
-            </button>
+            {!searchQuery && selectedAuthor === 'all' && (
+              <button style={styles.emptyButton} onClick={() => setView('add')}>
+                Add a Recipe
+              </button>
+            )}
           </div>
         )}
       </section>
@@ -388,6 +474,7 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
 function RecipeCard({ recipe, categories, onClick }) {
   const category = categories.find(c => c.id === recipe.category);
   const [imageError, setImageError] = useState(false);
+  const commentCount = recipe.comments?.length || 0;
 
   return (
     <button style={styles.recipeCard} onClick={onClick}>
@@ -417,6 +504,12 @@ function RecipeCard({ recipe, categories, onClick }) {
           {recipe.prepTime && <span>{recipe.prepTime}</span>}
           {recipe.prepTime && recipe.servings && <span style={styles.cardMetaDot}>·</span>}
           {recipe.servings && <span>Serves {recipe.servings}</span>}
+          {commentCount > 0 && (
+            <>
+              <span style={styles.cardMetaDot}>·</span>
+              <span>{commentCount} {commentCount === 1 ? 'note' : 'notes'}</span>
+            </>
+          )}
         </div>
       </div>
     </button>
@@ -436,6 +529,7 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
   const [uploadingImage, setUploadingImage] = useState(false);
   const [websiteUrl, setWebsiteUrl] = useState('');
   const [websiteContent, setWebsiteContent] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
   const recipeImageInputRef = useRef(null);
 
@@ -508,10 +602,26 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
     updateField('imageUrl', '');
   };
 
-  const handleScanFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
 
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) {
+      processUploadedFile(file);
+    }
+  };
+
+  const processUploadedFile = async (file) => {
     const isPDF = file.type === 'application/pdf';
     const isImage = file.type.startsWith('image/');
 
@@ -522,7 +632,6 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
 
     setIsProcessing(true);
     
-    // For images, show preview. For PDFs, show file name
     if (isImage) {
       setUploadedScanImage(URL.createObjectURL(file));
       setUploadedFileName(null);
@@ -539,7 +648,6 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
         reader.readAsDataURL(file);
       });
 
-      // Call appropriate endpoint based on file type
       const data = await callRecipeAI(isPDF ? 'scan-pdf' : 'scan-image', { 
         imageData: base64, 
         imageType: file.type 
@@ -560,6 +668,13 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
     }
   };
 
+  const handleScanFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      processUploadedFile(file);
+    }
+  };
+
   const handleWebsiteImport = async () => {
     const content = websiteContent.trim();
     if (!content) {
@@ -570,7 +685,6 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
     setIsProcessing(true);
 
     try {
-      // Call Netlify function instead of Claude directly
       const data = await callRecipeAI('extract-website', { content });
       
       const jsonMatch = data.content[0].text.match(/\{[\s\S]*\}/);
@@ -588,7 +702,6 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
     }
   };
 
-  // Fetch recipe directly from URL
   const handleUrlFetch = async () => {
     const url = websiteUrl.trim();
     if (!url) {
@@ -604,7 +717,6 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
     setIsProcessing(true);
 
     try {
-      // Call Netlify function to fetch and extract
       const data = await callRecipeAI('fetch-url', { url });
       
       if (data.error) {
@@ -652,14 +764,14 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
           : [],
         instructions: Array.isArray(formData.instructions)
           ? formData.instructions.filter(i => i && i.trim())
-          : []
+          : [],
+        comments: formData.comments || []
       };
       
       await onSave(cleanedData);
     } catch (error) {
       console.error('Submit error:', error);
-      showNotification('Error saving recipe', 'error');
-    } finally {
+      showNotification('Error saving recipe: ' + error.message, 'error');
       setUploadingImage(false);
     }
   };
@@ -697,8 +809,15 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
       {activeTab === 'scan' && !recipe && (
         <div style={styles.scanSection}>
           <div 
-            style={styles.uploadZone}
+            style={{
+              ...styles.uploadZone,
+              borderColor: isDragging ? '#8a9a8e' : '#d9d6d0',
+              backgroundColor: isDragging ? '#f0f5f1' : '#faf9f7'
+            }}
             onClick={() => fileInputRef.current?.click()}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
           >
             {uploadedScanImage ? (
               <img src={uploadedScanImage} alt="Uploaded" style={styles.uploadedImage} />
@@ -712,7 +831,7 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
                 <div style={styles.scanIcon}>✦</div>
                 <h3 style={styles.scanTitle}>Scan a Recipe</h3>
                 <p style={styles.scanText}>
-                  Upload a photo or PDF of a recipe card, cookbook page, or document.<br />
+                  Drag & drop a photo or PDF here, or click to browse.<br />
                   We'll convert it to text for you.
                 </p>
                 <button type="button" style={styles.uploadButton}>
@@ -748,7 +867,6 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
               or paste the recipe content directly.
             </p>
             
-            {/* Option 1: Fetch from URL */}
             <div style={styles.websiteInputGroup}>
               <label style={styles.label}>Option 1: Fetch from URL</label>
               <div style={styles.urlFetchRow}>
@@ -779,7 +897,6 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
               <span style={styles.orLine}></span>
             </div>
 
-            {/* Option 2: Paste content */}
             <div style={styles.websiteInputGroup}>
               <label style={styles.label}>Option 2: Paste Recipe Content</label>
               <p style={styles.websiteHint}>
@@ -997,9 +1114,31 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
 // ============================================
 // RECIPE DETAIL PAGE
 // ============================================
-function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack }) {
+function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddComment, onDeleteComment }) {
   const category = categories.find(c => c.id === recipe.category);
   const [imageError, setImageError] = useState(false);
+  const [newComment, setNewComment] = useState({ author: '', text: '' });
+  const [showCommentForm, setShowCommentForm] = useState(false);
+
+  const handleAddComment = () => {
+    if (!newComment.text.trim()) return;
+    if (!newComment.author.trim()) {
+      newComment.author = 'Anonymous';
+    }
+    onAddComment(newComment);
+    setNewComment({ author: '', text: '' });
+    setShowCommentForm(false);
+  };
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric' 
+    });
+  };
 
   return (
     <div style={styles.detailPage}>
@@ -1071,183 +1210,90 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack }) {
               <p style={styles.notesContent}>{recipe.notes}</p>
             </section>
           )}
+
+          <section style={styles.commentsSection}>
+            <div style={styles.commentsSectionHeader}>
+              <h3 style={styles.commentsTitle}>
+                Family Notes & Reviews ({recipe.comments?.length || 0})
+              </h3>
+              {!showCommentForm && (
+                <button 
+                  onClick={() => setShowCommentForm(true)} 
+                  style={styles.addCommentBtn}
+                >
+                  + Add Note
+                </button>
+              )}
+            </div>
+
+            {showCommentForm && (
+              <div style={styles.commentForm}>
+                <input
+                  type="text"
+                  value={newComment.author}
+                  onChange={(e) => setNewComment(prev => ({ ...prev, author: e.target.value }))}
+                  placeholder="Your name"
+                  style={styles.commentAuthorInput}
+                />
+                <textarea
+                  value={newComment.text}
+                  onChange={(e) => setNewComment(prev => ({ ...prev, text: e.target.value }))}
+                  placeholder="Share your experience with this recipe, any changes you made, or tips for others..."
+                  style={styles.commentTextInput}
+                  rows={3}
+                />
+                <div style={styles.commentFormActions}>
+                  <button 
+                    type="button" 
+                    onClick={() => setShowCommentForm(false)} 
+                    style={styles.cancelBtn}
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    type="button" 
+                    onClick={handleAddComment}
+                    style={styles.saveBtn}
+                    disabled={!newComment.text.trim()}
+                  >
+                    Add Note
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {recipe.comments && recipe.comments.length > 0 ? (
+              <div style={styles.commentsList}>
+                {recipe.comments.map((comment) => (
+                  <div key={comment.id} style={styles.commentItem}>
+                    <div style={styles.commentHeader}>
+                      <span style={styles.commentAuthor}>{comment.author}</span>
+                      <span style={styles.commentDate}>{formatDate(comment.date)}</span>
+                    </div>
+                    <p style={styles.commentText}>{comment.text}</p>
+                    <button 
+                      onClick={() => {
+                        if (confirm('Remove this note?')) {
+                          onDeleteComment(comment.id);
+                        }
+                      }}
+                      style={styles.deleteCommentBtn}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : !showCommentForm && (
+              <p style={styles.noComments}>
+                No notes yet. Be the first to share your experience with this recipe!
+              </p>
+            )}
+          </section>
         </div>
       </article>
     </div>
   );
-}
-
-// ============================================
-// BOOK PAGE
-// ============================================
-function BookPage({ recipes, categories, showNotification }) {
-  const groupedRecipes = categories
-    .filter(c => c.id !== 'all')
-    .map(cat => ({ ...cat, recipes: recipes.filter(r => r.category === cat.id) }))
-    .filter(cat => cat.recipes.length > 0);
-
-  const downloadHTML = () => {
-    const html = generateBookHTML(recipes, categories);
-    const blob = new Blob([html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'bever-family-recipes.html';
-    a.click();
-    URL.revokeObjectURL(url);
-    showNotification('Cookbook downloaded!');
-  };
-
-  return (
-    <div style={styles.bookPage}>
-      <div style={styles.bookHeader}>
-        <div>
-          <h1 style={styles.bookTitle}>Family Cookbook</h1>
-          <p style={styles.bookSubtitle}>{recipes.length} recipes ready for printing</p>
-        </div>
-        <div style={styles.bookActions}>
-          <button onClick={downloadHTML} style={styles.downloadBtn}>
-            Download as HTML
-          </button>
-          <button onClick={() => window.print()} style={styles.printBtn}>
-            Print Cookbook
-          </button>
-        </div>
-      </div>
-
-      <div style={styles.bookPreviewWrap}>
-        <div style={styles.bookPreview}>
-          <div style={styles.bookCover}>
-            <div style={styles.coverMark}>BF</div>
-            <h1 style={styles.coverTitle}>Bever Family<br />Recipes</h1>
-            <div style={styles.coverDivider}>
-              <span style={styles.coverDivLine}></span>
-              <span style={styles.coverDivIcon}>✦</span>
-              <span style={styles.coverDivLine}></span>
-            </div>
-            <p style={styles.coverSubtitle}>A Collection of Treasured Recipes</p>
-            <p style={styles.coverYear}>{new Date().getFullYear()}</p>
-          </div>
-
-          {groupedRecipes.length > 0 && (
-            <div style={styles.tocSection}>
-              <h2 style={styles.tocTitle}>Contents</h2>
-              {groupedRecipes.map(cat => (
-                <div key={cat.id} style={styles.tocCategory}>
-                  <h3 style={styles.tocCatName}>{cat.name}</h3>
-                  <ul style={styles.tocList}>
-                    {cat.recipes.map(r => (
-                      <li key={r.id} style={styles.tocItem}>{r.title}</li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Generate printable HTML
-function generateBookHTML(recipes, categories) {
-  const grouped = categories
-    .filter(c => c.id !== 'all')
-    .map(cat => ({ ...cat, recipes: recipes.filter(r => r.category === cat.id) }))
-    .filter(cat => cat.recipes.length > 0);
-
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>Bever Family Recipes</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Montserrat:wght@400;500;600&display=swap');
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Montserrat', sans-serif; color: #3d3d3d; line-height: 1.7; background: #fdfcfa; }
-    .cover { height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #f5f3ef; page-break-after: always; text-align: center; padding: 40px; }
-    .cover-mark { font-family: 'Cormorant Garamond', serif; font-size: 48px; color: #8a9a8e; margin-bottom: 24px; letter-spacing: 4px; }
-    .cover h1 { font-family: 'Cormorant Garamond', serif; font-size: 42px; font-weight: 400; color: #3d3d3d; margin-bottom: 20px; line-height: 1.2; }
-    .cover-div { display: flex; align-items: center; gap: 16px; margin: 20px 0; }
-    .cover-line { width: 60px; height: 1px; background: #c9c4bc; }
-    .cover-icon { color: #8a9a8e; font-size: 14px; }
-    .cover p { color: #7a7a7a; font-size: 14px; letter-spacing: 2px; text-transform: uppercase; }
-    .cover .year { margin-top: 40px; font-size: 14px; }
-    .toc { padding: 60px; page-break-after: always; }
-    .toc h2 { font-family: 'Cormorant Garamond', serif; font-size: 28px; color: #3d3d3d; margin-bottom: 32px; text-align: center; }
-    .toc-cat { margin-bottom: 24px; }
-    .toc-cat h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: #8a9a8e; margin-bottom: 8px; }
-    .toc-cat ul { list-style: none; }
-    .toc-cat li { padding: 4px 0; font-size: 14px; color: #5a5a5a; padding-left: 16px; }
-    .divider-page { height: 100vh; display: flex; justify-content: center; align-items: center; background: #f5f3ef; page-break-after: always; }
-    .divider-page h2 { font-family: 'Cormorant Garamond', serif; font-size: 32px; color: #3d3d3d; }
-    .recipe { padding: 40px 60px; page-break-inside: avoid; }
-    .recipe-img { width: 100%; height: 250px; object-fit: cover; border-radius: 4px; margin-bottom: 24px; }
-    .recipe h3 { font-family: 'Cormorant Garamond', serif; font-size: 28px; color: #3d3d3d; margin-bottom: 8px; }
-    .recipe .author { font-style: italic; color: #8a9a8e; margin-bottom: 16px; font-size: 14px; }
-    .recipe .meta { display: flex; gap: 24px; font-size: 13px; color: #7a7a7a; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #e8e6e2; }
-    .recipe-body { display: grid; grid-template-columns: 1fr 2fr; gap: 40px; }
-    .recipe h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: #8a9a8e; margin-bottom: 12px; }
-    .recipe ul { list-style: none; }
-    .recipe ul li { padding: 8px 0; border-bottom: 1px dotted #e8e6e2; font-size: 14px; }
-    .recipe ol { padding-left: 20px; }
-    .recipe ol li { padding: 10px 0; font-size: 14px; }
-    .recipe .notes { grid-column: 1 / -1; background: #f9f8f6; padding: 20px; margin-top: 24px; border-left: 3px solid #8a9a8e; font-style: italic; font-size: 14px; color: #5a5a5a; }
-    @media print { .recipe { padding: 30px 40px; } }
-  </style>
-</head>
-<body>
-  <div class="cover">
-    <div class="cover-mark">BF</div>
-    <h1>Bever Family<br>Recipes</h1>
-    <div class="cover-div">
-      <span class="cover-line"></span>
-      <span class="cover-icon">✦</span>
-      <span class="cover-line"></span>
-    </div>
-    <p>A Collection of Treasured Recipes</p>
-    <p class="year">${new Date().getFullYear()}</p>
-  </div>
-  
-  <div class="toc">
-    <h2>Contents</h2>
-    ${grouped.map(cat => `
-      <div class="toc-cat">
-        <h3>${cat.name}</h3>
-        <ul>${cat.recipes.map(r => `<li>${r.title}</li>`).join('')}</ul>
-      </div>
-    `).join('')}
-  </div>
-  
-  ${grouped.map(cat => `
-    <div class="divider-page"><h2>${cat.name}</h2></div>
-    ${cat.recipes.map(recipe => `
-      <div class="recipe">
-        ${recipe.imageUrl ? `<img class="recipe-img" src="${recipe.imageUrl}" alt="${recipe.title}">` : ''}
-        <h3>${recipe.title}</h3>
-        ${recipe.author ? `<p class="author">A recipe from ${recipe.author}</p>` : ''}
-        <div class="meta">
-          ${recipe.prepTime ? `<span>Prep: ${recipe.prepTime}</span>` : ''}
-          ${recipe.cookTime ? `<span>Cook: ${recipe.cookTime}</span>` : ''}
-          ${recipe.servings ? `<span>Serves ${recipe.servings}</span>` : ''}
-        </div>
-        <div class="recipe-body">
-          <div>
-            <h4>Ingredients</h4>
-            <ul>${(recipe.ingredients || []).map(i => `<li><strong>${i.amount}</strong> ${i.ingredient}</li>`).join('')}</ul>
-          </div>
-          <div>
-            <h4>Instructions</h4>
-            <ol>${(recipe.instructions || []).map(s => `<li>${s}</li>`).join('')}</ol>
-          </div>
-          ${recipe.notes ? `<div class="notes">${recipe.notes}</div>` : ''}
-        </div>
-      </div>
-    `).join('')}
-  `).join('')}
-</body>
-</html>`;
 }
 
 // ============================================
@@ -1303,6 +1349,8 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 16,
   },
   logo: {
     display: 'flex',
@@ -1325,7 +1373,7 @@ const styles = {
     lineHeight: 1.1,
   },
   logoSubtitle: { fontSize: 10, letterSpacing: 3, color: '#8a9a8e' },
-  nav: { display: 'flex', gap: 32 },
+  nav: { display: 'flex', gap: 24 },
   navLink: {
     background: 'none',
     border: 'none',
@@ -1353,7 +1401,7 @@ const styles = {
 
   hero: {
     backgroundColor: '#f5f3ef',
-    padding: '80px 40px',
+    padding: '60px 40px',
     textAlign: 'center',
   },
   heroContent: { maxWidth: 700, margin: '0 auto' },
@@ -1366,7 +1414,7 @@ const styles = {
   },
   heroTitle: {
     fontFamily: "'Cormorant Garamond', Georgia, serif",
-    fontSize: 52,
+    fontSize: 48,
     fontWeight: 400,
     color: '#3d3d3d',
     marginBottom: 24,
@@ -1381,11 +1429,15 @@ const styles = {
   },
   heroDividerLine: { width: 60, height: 1, backgroundColor: '#c9c4bc' },
   heroDividerIcon: { color: '#8a9a8e', fontSize: 12 },
-  heroSubtitle: { fontSize: 15, color: '#7a7a7a', lineHeight: 1.8, marginBottom: 40 },
-  searchContainer: { maxWidth: 400, margin: '0 auto' },
+  heroSubtitle: { fontSize: 15, color: '#7a7a7a', lineHeight: 1.8, marginBottom: 32 },
+  searchContainer: { 
+    maxWidth: 400, 
+    margin: '0 auto',
+    position: 'relative',
+  },
   searchInput: {
     width: '100%',
-    padding: '16px 24px',
+    padding: '16px 48px 16px 24px',
     fontSize: 14,
     border: '1px solid #d9d6d0',
     borderRadius: 2,
@@ -1394,43 +1446,79 @@ const styles = {
     textAlign: 'center',
     letterSpacing: 0.5,
   },
+  clearSearch: {
+    position: 'absolute',
+    right: 16,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    background: 'none',
+    border: 'none',
+    fontSize: 20,
+    color: '#9a9a9a',
+    cursor: 'pointer',
+    padding: 4,
+  },
+  authorFilter: {
+    marginTop: 20,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  authorLabel: {
+    fontSize: 13,
+    color: '#7a7a7a',
+  },
+  authorSelect: {
+    padding: '10px 16px',
+    fontSize: 14,
+    border: '1px solid #d9d6d0',
+    borderRadius: 2,
+    backgroundColor: 'white',
+    outline: 'none',
+    cursor: 'pointer',
+    minWidth: 150,
+  },
 
   categorySection: {
-    padding: '32px 40px',
+    padding: '24px 40px',
     borderBottom: '1px solid #e8e6e2',
     backgroundColor: '#fdfcfa',
+    overflowX: 'auto',
   },
   categoryPills: {
     display: 'flex',
     justifyContent: 'center',
     flexWrap: 'wrap',
-    gap: 12,
-    maxWidth: 900,
+    gap: 10,
+    maxWidth: 1000,
     margin: '0 auto',
   },
   categoryPill: {
-    padding: '10px 24px',
+    padding: '8px 16px',
     background: 'transparent',
     border: '1px solid #d9d6d0',
     borderRadius: 2,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: 500,
     color: '#7a7a7a',
     cursor: 'pointer',
     letterSpacing: 1,
     textTransform: 'uppercase',
+    whiteSpace: 'nowrap',
   },
   categoryPillActive: {
-    padding: '10px 24px',
+    padding: '8px 16px',
     background: '#5c6d5e',
     border: '1px solid #5c6d5e',
     borderRadius: 2,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: 500,
     color: 'white',
     cursor: 'pointer',
     letterSpacing: 1,
     textTransform: 'uppercase',
+    whiteSpace: 'nowrap',
   },
 
   recipeSection: { padding: '48px 40px', maxWidth: 1200, margin: '0 auto' },
@@ -1441,6 +1529,8 @@ const styles = {
     marginBottom: 32,
     paddingBottom: 16,
     borderBottom: '1px solid #e8e6e2',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   sectionTitle: {
     fontFamily: "'Cormorant Garamond', Georgia, serif",
@@ -1451,7 +1541,7 @@ const styles = {
   recipeCount: { fontSize: 13, color: '#9a9a9a', letterSpacing: 0.5 },
   recipeGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
     gap: 32,
   },
 
@@ -1462,8 +1552,9 @@ const styles = {
     overflow: 'hidden',
     cursor: 'pointer',
     textAlign: 'left',
+    transition: 'box-shadow 0.2s',
   },
-  cardImageContainer: { height: 220, overflow: 'hidden', backgroundColor: '#f5f3ef' },
+  cardImageContainer: { height: 200, overflow: 'hidden', backgroundColor: '#f5f3ef' },
   cardImage: { width: '100%', height: '100%', objectFit: 'cover' },
   cardImagePlaceholder: {
     width: '100%',
@@ -1474,28 +1565,28 @@ const styles = {
     backgroundColor: '#f5f3ef',
   },
   placeholderIcon: { fontSize: 32, color: '#c9c4bc' },
-  cardContent: { padding: 24 },
+  cardContent: { padding: 20 },
   cardCategory: {
-    fontSize: 11,
+    fontSize: 10,
     letterSpacing: 2,
     textTransform: 'uppercase',
     color: '#8a9a8e',
-    marginBottom: 8,
+    marginBottom: 6,
     display: 'block',
   },
   cardTitle: {
     fontFamily: "'Cormorant Garamond', Georgia, serif",
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: 400,
     color: '#3d3d3d',
-    marginBottom: 8,
+    marginBottom: 6,
     lineHeight: 1.3,
   },
-  cardAuthor: { fontSize: 13, color: '#9a9a9a', fontStyle: 'italic', marginBottom: 12 },
-  cardMeta: { fontSize: 12, color: '#9a9a9a', display: 'flex', alignItems: 'center' },
-  cardMetaDot: { margin: '0 8px' },
+  cardAuthor: { fontSize: 12, color: '#9a9a9a', fontStyle: 'italic', marginBottom: 10 },
+  cardMeta: { fontSize: 11, color: '#9a9a9a', display: 'flex', alignItems: 'center', flexWrap: 'wrap' },
+  cardMetaDot: { margin: '0 6px' },
 
-  emptyState: { textAlign: 'center', padding: '80px 20px' },
+  emptyState: { textAlign: 'center', padding: '60px 20px' },
   emptyIcon: { fontSize: 32, color: '#c9c4bc', marginBottom: 24 },
   emptyTitle: {
     fontFamily: "'Cormorant Garamond', Georgia, serif",
@@ -1519,7 +1610,7 @@ const styles = {
 
   footer: {
     backgroundColor: '#f5f3ef',
-    padding: '60px 40px',
+    padding: '48px 40px',
     textAlign: 'center',
     borderTop: '1px solid #e8e6e2',
   },
@@ -1558,10 +1649,10 @@ const styles = {
   },
   tab: {
     flex: 1,
-    padding: '16px 20px',
+    padding: '14px 16px',
     background: 'white',
     border: 'none',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 500,
     color: '#7a7a7a',
     cursor: 'pointer',
@@ -1569,10 +1660,10 @@ const styles = {
   },
   tabActive: {
     flex: 1,
-    padding: '16px 20px',
+    padding: '14px 16px',
     background: '#5c6d5e',
     border: 'none',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 500,
     color: 'white',
     cursor: 'pointer',
@@ -1588,6 +1679,7 @@ const styles = {
     cursor: 'pointer',
     backgroundColor: '#faf9f7',
     position: 'relative',
+    transition: 'all 0.2s',
   },
   scanIcon: { fontSize: 32, color: '#8a9a8e', marginBottom: 16 },
   scanTitle: {
@@ -1926,6 +2018,8 @@ const styles = {
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 32,
+    flexWrap: 'wrap',
+    gap: 12,
   },
   backBtn: {
     padding: '10px 20px',
@@ -1985,6 +2079,7 @@ const styles = {
     gap: 32,
     fontSize: 13,
     color: '#7a7a7a',
+    flexWrap: 'wrap',
   },
   detailDivider: {
     display: 'flex',
@@ -2033,110 +2128,124 @@ const styles = {
   },
   notesContent: { fontSize: 14, color: '#5a5a5a', lineHeight: 1.8, fontStyle: 'italic' },
 
-  bookPage: { padding: 48, maxWidth: 1000, margin: '0 auto' },
-  bookHeader: {
+  commentsSection: {
+    marginTop: 48,
+    paddingTop: 32,
+    borderTop: '1px solid #e8e6e2',
+  },
+  commentsSectionHeader: {
     display: 'flex',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 40,
+    alignItems: 'center',
+    marginBottom: 24,
+    flexWrap: 'wrap',
+    gap: 12,
   },
-  bookTitle: {
-    fontFamily: "'Cormorant Garamond', Georgia, serif",
-    fontSize: 32,
-    color: '#3d3d3d',
-    marginBottom: 8,
+  commentsTitle: {
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+    color: '#8a9a8e',
   },
-  bookSubtitle: { color: '#9a9a9a', fontSize: 14 },
-  bookActions: { display: 'flex', gap: 12 },
-  downloadBtn: {
-    padding: '14px 24px',
-    background: 'white',
+  addCommentBtn: {
+    padding: '10px 20px',
+    background: 'transparent',
+    border: '1px solid #8a9a8e',
+    borderRadius: 2,
+    fontSize: 12,
+    fontWeight: 500,
+    color: '#5c6d5e',
+    cursor: 'pointer',
+    letterSpacing: 0.5,
+  },
+  commentForm: {
+    background: '#f9f8f6',
+    padding: 24,
+    marginBottom: 24,
+    borderRadius: 2,
+  },
+  commentAuthorInput: {
+    width: '100%',
+    maxWidth: 300,
+    padding: '12px 16px',
+    fontSize: 14,
     border: '1px solid #d9d6d0',
     borderRadius: 2,
-    fontSize: 12,
-    fontWeight: 500,
-    letterSpacing: 0.5,
-    cursor: 'pointer',
-    color: '#7a7a7a',
+    outline: 'none',
+    fontFamily: 'inherit',
+    marginBottom: 12,
   },
-  printBtn: {
-    padding: '14px 28px',
-    background: '#5c6d5e',
-    border: 'none',
+  commentTextInput: {
+    width: '100%',
+    padding: '12px 16px',
+    fontSize: 14,
+    border: '1px solid #d9d6d0',
     borderRadius: 2,
-    fontSize: 12,
-    fontWeight: 500,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    cursor: 'pointer',
-    color: 'white',
-  },
-  bookPreviewWrap: {
-    background: '#e8e6e2',
-    padding: 48,
-    display: 'flex',
-    justifyContent: 'center',
-  },
-  bookPreview: {
-    width: 480,
-    background: 'white',
-    boxShadow: '0 10px 40px rgba(0,0,0,0.1)',
-    padding: 48,
-  },
-  bookCover: {
-    textAlign: 'center',
-    paddingBottom: 40,
-    borderBottom: '1px solid #e8e6e2',
-    marginBottom: 40,
-  },
-  coverMark: {
-    fontFamily: "'Cormorant Garamond', Georgia, serif",
-    fontSize: 36,
-    color: '#8a9a8e',
-    letterSpacing: 4,
-    marginBottom: 24,
-  },
-  coverTitle: {
-    fontFamily: "'Cormorant Garamond', Georgia, serif",
-    fontSize: 32,
-    fontWeight: 400,
-    color: '#3d3d3d',
-    lineHeight: 1.3,
-    marginBottom: 20,
-  },
-  coverDivider: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-    marginBottom: 20,
-  },
-  coverDivLine: { width: 40, height: 1, backgroundColor: '#d9d6d0' },
-  coverDivIcon: { color: '#c9c4bc', fontSize: 10 },
-  coverSubtitle: {
-    fontSize: 12,
-    letterSpacing: 2,
-    textTransform: 'uppercase',
-    color: '#9a9a9a',
+    outline: 'none',
+    fontFamily: 'inherit',
+    resize: 'vertical',
     marginBottom: 16,
   },
-  coverYear: { fontSize: 14, color: '#c9c4bc', marginTop: 24 },
-  tocSection: {},
-  tocTitle: {
-    fontFamily: "'Cormorant Garamond', Georgia, serif",
-    fontSize: 20,
-    color: '#3d3d3d',
-    marginBottom: 24,
-    textAlign: 'center',
+  commentFormActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 12,
   },
-  tocCategory: { marginBottom: 20 },
-  tocCatName: {
-    fontSize: 11,
-    letterSpacing: 2,
-    textTransform: 'uppercase',
-    color: '#8a9a8e',
+  commentsList: {},
+  commentItem: {
+    padding: '20px 0',
+    borderBottom: '1px solid #e8e6e2',
+    position: 'relative',
+  },
+  commentHeader: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: 12,
     marginBottom: 8,
   },
-  tocList: { listStyle: 'none', paddingLeft: 12 },
-  tocItem: { fontSize: 13, color: '#7a7a7a', padding: '4px 0' },
+  commentAuthor: {
+    fontWeight: 600,
+    fontSize: 14,
+    color: '#3d3d3d',
+  },
+  commentDate: {
+    fontSize: 12,
+    color: '#9a9a9a',
+  },
+  commentText: {
+    fontSize: 14,
+    color: '#5a5a5a',
+    lineHeight: 1.7,
+  },
+  deleteCommentBtn: {
+    position: 'absolute',
+    top: 20,
+    right: 0,
+    background: 'none',
+    border: 'none',
+    fontSize: 12,
+    color: '#c9a89a',
+    cursor: 'pointer',
+  },
+  noComments: {
+    fontSize: 14,
+    color: '#9a9a9a',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    padding: '24px 0',
+  },
 };
+
+// Responsive overrides
+if (typeof window !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 768px) {
+      .formRow, .formRow3 { grid-template-columns: 1fr !important; }
+      .detailBody { grid-template-columns: 1fr !important; }
+    }
+  `;
+  document.head.appendChild(style);
+}

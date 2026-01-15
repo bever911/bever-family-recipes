@@ -48,6 +48,8 @@ const setLocalStorage = (key, value) => {
 // ============================================
 // CONSTANTS
 // ============================================
+const FAMILY_CODE = 'bluestar';
+
 const DEFAULT_CATEGORIES = [
   { id: 'all', name: 'All Recipes', icon: '✦' },
   { id: 'breakfast', name: 'Breakfast', icon: '☀' },
@@ -71,24 +73,39 @@ const SORT_OPTIONS = [
   { id: 'category', name: 'By Category' },
 ];
 
+// Standard units for autocomplete
+const STANDARD_UNITS = [
+  'cup', 'cups',
+  'tbsp', 'tsp',
+  'oz', 'lb',
+  'g', 'kg', 'ml', 'liter',
+  'pint', 'quart', 'gallon',
+  'piece', 'slice', 'clove',
+  'can', 'package', 'stick',
+  'pinch', 'dash', 'sprig',
+  'large', 'medium', 'small',
+  'whole', 'bunch', 'head',
+];
+
 const EMPTY_RECIPE = {
   id: '',
   title: '',
   category: '',
   author: '',
-  authorIsFamily: true, // Default to family member
+  authorIsFamily: true,
   servings: '',
   prepTime: '',
   cookTime: '',
-  ingredients: [{ amount: '', ingredient: '' }],
+  ingredients: [{ qty: '', unit: '', ingredient: '' }],
   instructions: [''],
   notes: '',
-  story: '', // NEW: Story/history behind recipe
+  story: '',
   imageUrl: '',
-  handwrittenImageUrl: '', // NEW: Original handwritten recipe card
+  handwrittenImageUrl: '',
   dateAdded: '',
+  trashedAt: null, // For trash system
   comments: [],
-  madeIt: [], // NEW: Array of {name, date}
+  madeIt: [],
 };
 
 // Target aspect ratio for images (4:3)
@@ -344,14 +361,11 @@ const processImageForUpload = (file) => {
 const formatAuthorDisplay = (author, isFamily) => {
   if (!author) return '';
   
-  // Get first name for warmer feel
-  const firstName = author.split(' ')[0];
-  
   if (isFamily !== false) {
-    // Family recipes get warm formatting
-    return `From ${firstName}'s Kitchen`;
+    // Family recipes get warm formatting with full name
+    return `From ${author}'s Kitchen`;
   } else {
-    // External sources (cookbooks, websites)
+    // External sources (cookbooks, websites, friends)
     return `Recipe from ${author}`;
   }
 };
@@ -402,6 +416,56 @@ const scaleIngredientAmount = (amount, multiplier) => {
 };
 
 // ============================================
+// DECIMAL TO FRACTION CONVERSION
+// ============================================
+const decimalToFraction = (decimal) => {
+  if (!decimal && decimal !== 0) return '';
+  
+  const num = parseFloat(decimal);
+  if (isNaN(num)) return decimal.toString();
+  
+  // Handle whole numbers
+  if (num === Math.floor(num)) return num.toString();
+  
+  const whole = Math.floor(num);
+  const frac = num - whole;
+  
+  // Common fractions with tolerance
+  const fractions = [
+    { val: 0.125, str: '⅛' },
+    { val: 0.167, str: '⅙' },
+    { val: 0.2, str: '⅕' },
+    { val: 0.25, str: '¼' },
+    { val: 0.333, str: '⅓' },
+    { val: 0.375, str: '⅜' },
+    { val: 0.4, str: '⅖' },
+    { val: 0.5, str: '½' },
+    { val: 0.6, str: '⅗' },
+    { val: 0.625, str: '⅝' },
+    { val: 0.667, str: '⅔' },
+    { val: 0.75, str: '¾' },
+    { val: 0.8, str: '⅘' },
+    { val: 0.833, str: '⅚' },
+    { val: 0.875, str: '⅞' },
+  ];
+  
+  for (const f of fractions) {
+    if (Math.abs(frac - f.val) < 0.02) {
+      return whole > 0 ? `${whole} ${f.str}` : f.str;
+    }
+  }
+  
+  // If no match, show decimal but clean it up
+  return num.toFixed(2).replace(/\.?0+$/, '');
+};
+
+// Format qty for display (convert decimals to fractions)
+const formatQtyDisplay = (qty) => {
+  if (!qty) return '';
+  return decimalToFraction(qty);
+};
+
+// ============================================
 // AI HELPER - Calls Netlify Function
 // ============================================
 const callRecipeAI = async (type, data) => {
@@ -437,13 +501,43 @@ export default function App() {
   const [favorites, setFavorites] = useState(() => getLocalStorage('bfr-favorites', []));
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  
+  // Family authentication
+  const [isFamily, setIsFamily] = useState(() => getLocalStorage('bfr-family-auth', false));
+  const [showFamilyLogin, setShowFamilyLogin] = useState(false);
+  const [familyCodeInput, setFamilyCodeInput] = useState('');
 
   // Get unique family authors from recipes (only those marked as family)
   const familyAuthors = ['all', ...new Set(
     recipes
-      .filter(r => r.authorIsFamily !== false && r.author)
+      .filter(r => r.authorIsFamily !== false && r.author && !r.trashedAt)
       .map(r => r.author)
   )];
+
+  // Active recipes (not in trash)
+  const activeRecipes = recipes.filter(r => !r.trashedAt);
+  
+  // Trashed recipes
+  const trashedRecipes = recipes.filter(r => r.trashedAt);
+
+  // Family login handler
+  const handleFamilyLogin = () => {
+    if (familyCodeInput.toLowerCase() === FAMILY_CODE.toLowerCase()) {
+      setIsFamily(true);
+      setLocalStorage('bfr-family-auth', true);
+      setShowFamilyLogin(false);
+      setFamilyCodeInput('');
+      showNotification('Welcome to the family kitchen!');
+    } else {
+      showNotification('Incorrect family code', 'error');
+    }
+  };
+
+  const handleFamilyLogout = () => {
+    setIsFamily(false);
+    setLocalStorage('bfr-family-auth', false);
+    showNotification('Logged out');
+  };
 
   useEffect(() => {
     const q = query(collection(db, 'recipes'), orderBy('dateAdded', 'desc'));
@@ -617,6 +711,48 @@ export default function App() {
     }
   };
 
+  // Migrate ingredients from {amount, ingredient} to {qty, unit, ingredient}
+  const migrateIngredientsFormat = async () => {
+    if (!confirm('This will convert all ingredients to the new format (qty, unit, ingredient). Continue?')) return;
+    
+    setIsProcessing(true);
+    let updated = 0;
+    
+    try {
+      for (const recipe of recipes) {
+        if (!recipe.ingredients || recipe.ingredients.length === 0) continue;
+        
+        // Check if already in new format
+        const needsMigration = recipe.ingredients.some(ing => ing.amount !== undefined && ing.qty === undefined);
+        if (!needsMigration) continue;
+        
+        const newIngredients = recipe.ingredients.map(ing => {
+          // Already new format
+          if (ing.qty !== undefined) return ing;
+          
+          // Migrate from old format
+          const amount = ing.amount || '';
+          const parsed = parseIngredientString(amount + ' ' + (ing.ingredient || ''));
+          
+          return {
+            qty: parsed.quantity || '',
+            unit: parsed.unit || '',
+            ingredient: parsed.item || ing.ingredient || ''
+          };
+        });
+        
+        await updateDoc(doc(db, 'recipes', recipe.id), { ingredients: newIngredients });
+        updated++;
+      }
+      showNotification(`Migrated ${updated} recipes to new format`);
+    } catch (error) {
+      console.error('Migration error:', error);
+      showNotification('Error migrating recipes', 'error');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const addComment = async (recipeId, comment) => {
     try {
       const recipe = recipes.find(r => r.id === recipeId);
@@ -672,7 +808,35 @@ export default function App() {
     }
   };
 
-  const deleteRecipe = async (recipeId, imageUrl, handwrittenImageUrl) => {
+  // Move recipe to trash (soft delete)
+  const moveToTrash = async (recipeId) => {
+    try {
+      await updateDoc(doc(db, 'recipes', recipeId), { 
+        trashedAt: new Date().toISOString() 
+      });
+      showNotification('Recipe moved to trash');
+      navigateTo('home');
+    } catch (error) {
+      console.error('Trash error:', error);
+      showNotification('Error moving to trash', 'error');
+    }
+  };
+
+  // Restore recipe from trash
+  const restoreFromTrash = async (recipeId) => {
+    try {
+      await updateDoc(doc(db, 'recipes', recipeId), { 
+        trashedAt: null 
+      });
+      showNotification('Recipe restored');
+    } catch (error) {
+      console.error('Restore error:', error);
+      showNotification('Error restoring recipe', 'error');
+    }
+  };
+
+  // Permanently delete recipe (only from trash)
+  const permanentlyDeleteRecipe = async (recipeId, imageUrl, handwrittenImageUrl) => {
     try {
       // Delete main image
       if (imageUrl && imageUrl.includes('firebasestorage')) {
@@ -695,11 +859,28 @@ export default function App() {
       }
       
       await deleteDoc(doc(db, 'recipes', recipeId));
-      showNotification('Recipe removed');
-      navigateTo('home');
+      showNotification('Recipe permanently deleted');
     } catch (error) {
       console.error('Delete error:', error);
       showNotification('Error deleting recipe', 'error');
+    }
+  };
+
+  // Empty all trash
+  const emptyTrash = async () => {
+    if (!confirm(`Permanently delete ${trashedRecipes.length} recipe(s) from trash? This cannot be undone.`)) return;
+    
+    setIsProcessing(true);
+    try {
+      for (const recipe of trashedRecipes) {
+        await permanentlyDeleteRecipe(recipe.id, recipe.imageUrl, recipe.handwrittenImageUrl);
+      }
+      showNotification('Trash emptied');
+    } catch (error) {
+      console.error('Empty trash error:', error);
+      showNotification('Error emptying trash', 'error');
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -734,12 +915,18 @@ export default function App() {
   };
 
   // Filter and sort recipes
-  const filteredRecipes = recipes
+  const filteredRecipes = activeRecipes
     .filter(recipe => {
       const query = searchQuery.toLowerCase();
+      // Handle both old {amount, ingredient} and new {qty, unit, ingredient} format
+      const ingredientMatches = recipe.ingredients?.some(i => 
+        i.ingredient?.toLowerCase().includes(query) ||
+        i.amount?.toLowerCase().includes(query) ||
+        i.unit?.toLowerCase().includes(query)
+      );
       const matchesSearch = !searchQuery || 
         recipe.title?.toLowerCase().includes(query) ||
-        recipe.ingredients?.some(i => i.ingredient?.toLowerCase().includes(query)) ||
+        ingredientMatches ||
         recipe.author?.toLowerCase().includes(query) ||
         recipe.notes?.toLowerCase().includes(query) ||
         recipe.story?.toLowerCase().includes(query) ||
@@ -792,6 +979,29 @@ export default function App() {
         </div>
       )}
 
+      {/* Family Login Modal */}
+      {showFamilyLogin && (
+        <div style={styles.modal} onClick={() => setShowFamilyLogin(false)}>
+          <div style={styles.familyLoginModal} onClick={e => e.stopPropagation()}>
+            <button style={styles.modalClose} onClick={() => setShowFamilyLogin(false)}>✕</button>
+            <h2 style={styles.familyLoginTitle}>Family Access</h2>
+            <p style={styles.familyLoginText}>Enter the family code to add and edit recipes.</p>
+            <input
+              type="password"
+              value={familyCodeInput}
+              onChange={(e) => setFamilyCodeInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleFamilyLogin()}
+              placeholder="Family code"
+              style={styles.familyCodeInput}
+              autoFocus
+            />
+            <button onClick={handleFamilyLogin} style={styles.familyLoginBtn}>
+              Enter Kitchen
+            </button>
+          </div>
+        </div>
+      )}
+
       <header style={styles.header} className="no-print">
         <div style={styles.headerInner}>
           <div 
@@ -813,12 +1023,22 @@ export default function App() {
             >
               Recipes
             </button>
-            <button 
-              style={view === 'add' ? styles.navLinkActive : styles.navLink}
-              onClick={() => navigateTo('add')}
-            >
-              Add New
-            </button>
+            {isFamily && (
+              <>
+                <button 
+                  style={view === 'add' ? styles.navLinkActive : styles.navLink}
+                  onClick={() => navigateTo('add')}
+                >
+                  Add New
+                </button>
+                <button 
+                  style={view === 'trash' ? styles.navLinkActive : styles.navLink}
+                  onClick={() => navigateTo('trash')}
+                >
+                  Trash {trashedRecipes.length > 0 && `(${trashedRecipes.length})`}
+                </button>
+              </>
+            )}
             <button 
               style={styles.navLink}
               onClick={exportRecipes}
@@ -826,6 +1046,22 @@ export default function App() {
             >
               Export
             </button>
+            {isFamily ? (
+              <button 
+                style={styles.navLink}
+                onClick={handleFamilyLogout}
+                title="Log out of family access"
+              >
+                Log Out
+              </button>
+            ) : (
+              <button 
+                style={styles.familyBtn}
+                onClick={() => setShowFamilyLogin(true)}
+              >
+                Family Login
+              </button>
+            )}
           </nav>
           
           {/* Mobile menu button */}
@@ -847,18 +1083,43 @@ export default function App() {
             >
               All Recipes
             </button>
-            <button 
-              style={styles.mobileNavLink}
-              onClick={() => navigateTo('add')}
-            >
-              Add New Recipe
-            </button>
+            {isFamily && (
+              <>
+                <button 
+                  style={styles.mobileNavLink}
+                  onClick={() => navigateTo('add')}
+                >
+                  Add New Recipe
+                </button>
+                <button 
+                  style={styles.mobileNavLink}
+                  onClick={() => navigateTo('trash')}
+                >
+                  Trash {trashedRecipes.length > 0 && `(${trashedRecipes.length})`}
+                </button>
+              </>
+            )}
             <button 
               style={styles.mobileNavLink}
               onClick={() => { exportRecipes(); setMobileMenuOpen(false); }}
             >
               Export Recipes
             </button>
+            {isFamily ? (
+              <button 
+                style={styles.mobileNavLink}
+                onClick={() => { handleFamilyLogout(); setMobileMenuOpen(false); }}
+              >
+                Log Out
+              </button>
+            ) : (
+              <button 
+                style={styles.mobileNavLink}
+                onClick={() => { setShowFamilyLogin(true); setMobileMenuOpen(false); }}
+              >
+                Family Login
+              </button>
+            )}
           </nav>
         )}
       </header>
@@ -866,7 +1127,7 @@ export default function App() {
       <main style={styles.main}>
         {view === 'home' && (
           <HomePage
-            recipes={recipes}
+            recipes={activeRecipes}
             filteredRecipes={filteredRecipes}
             categories={categories}
             selectedCategory={selectedCategory}
@@ -881,15 +1142,31 @@ export default function App() {
             setSelectedRecipe={(r) => navigateTo('view', r)}
             setView={navigateTo}
             onNormalizeAll={normalizeAllRecipes}
+            onMigrateIngredients={migrateIngredientsFormat}
+            onEmptyTrash={emptyTrash}
+            trashedCount={trashedRecipes.length}
             isProcessing={isProcessing}
             favorites={favorites}
             toggleFavorite={toggleFavorite}
             showFavoritesOnly={showFavoritesOnly}
             setShowFavoritesOnly={setShowFavoritesOnly}
+            isFamily={isFamily}
           />
         )}
 
-        {(view === 'add' || view === 'edit') && (
+        {view === 'trash' && isFamily && (
+          <TrashPage
+            trashedRecipes={trashedRecipes}
+            categories={categories}
+            onRestore={restoreFromTrash}
+            onPermanentDelete={permanentlyDeleteRecipe}
+            onEmptyTrash={emptyTrash}
+            onBack={() => navigateTo('home')}
+            isProcessing={isProcessing}
+          />
+        )}
+
+        {(view === 'add' || view === 'edit') && isFamily && (
           <AddRecipePage
             recipe={selectedRecipe}
             categories={categories.filter(c => c.id !== 'all')}
@@ -908,8 +1185,8 @@ export default function App() {
             categories={categories}
             onEdit={() => navigateTo('edit', selectedRecipe)}
             onDelete={() => {
-              if (confirm('Remove this recipe from the collection?')) {
-                deleteRecipe(selectedRecipe.id, selectedRecipe.imageUrl, selectedRecipe.handwrittenImageUrl);
+              if (confirm('Move this recipe to trash?')) {
+                moveToTrash(selectedRecipe.id);
               }
             }}
             onBack={() => navigateTo('home')}
@@ -919,6 +1196,7 @@ export default function App() {
             onMadeIt={(name) => addMadeIt(selectedRecipe.id, name)}
             isFavorite={favorites.includes(selectedRecipe.id)}
             onToggleFavorite={() => toggleFavorite(selectedRecipe.id)}
+            isFamily={isFamily}
           />
         )}
       </main>
@@ -937,7 +1215,7 @@ export default function App() {
 // ============================================
 // HOME PAGE
 // ============================================
-function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setSelectedCategory, familyAuthors, selectedAuthor, setSelectedAuthor, searchQuery, setSearchQuery, sortBy, setSortBy, setSelectedRecipe, setView, onNormalizeAll, isProcessing, favorites, toggleFavorite, showFavoritesOnly, setShowFavoritesOnly }) {
+function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setSelectedCategory, familyAuthors, selectedAuthor, setSelectedAuthor, searchQuery, setSearchQuery, sortBy, setSortBy, setSelectedRecipe, setView, onNormalizeAll, onMigrateIngredients, onEmptyTrash, trashedCount, isProcessing, favorites, toggleFavorite, showFavoritesOnly, setShowFavoritesOnly, isFamily }) {
   const [showAdminTools, setShowAdminTools] = useState(false);
 
   return (
@@ -1068,7 +1346,7 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
                 ? 'Try adjusting your search or filters.'
                 : 'Start your family\'s collection by adding the first recipe.'}
             </p>
-            {!searchQuery && selectedAuthor === 'all' && !showFavoritesOnly && (
+            {!searchQuery && selectedAuthor === 'all' && !showFavoritesOnly && isFamily && (
               <button style={styles.emptyButton} onClick={() => setView('add')}>
                 Add a Recipe
               </button>
@@ -1076,46 +1354,57 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
           </div>
         )}
 
-        {/* Admin tools toggle */}
-        <div style={{ textAlign: 'center', marginTop: 32 }}>
-          <button 
-            onClick={() => setShowAdminTools(!showAdminTools)}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: '#c9c4bc',
-              fontSize: 11,
-              cursor: 'pointer',
-              letterSpacing: 1,
-            }}
-          >
-            {showAdminTools ? '✕ Hide Tools' : '⚙ Admin Tools'}
-          </button>
-          
-          {showAdminTools && (
-            <div style={{ marginTop: 16, padding: 20, background: '#f5f3ef', borderRadius: 4 }}>
-              <button 
-                onClick={onNormalizeAll} 
-                disabled={isProcessing} 
-                style={{
-                  padding: '12px 24px',
-                  background: '#5c6d5e',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: 2,
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  marginBottom: 8,
-                }}
-              >
-                {isProcessing ? 'Processing...' : 'Normalize All Recipes'}
-              </button>
-              <p style={{ fontSize: 12, color: '#5a5a5a', margin: 0 }}>
-                Standardizes units (tbsp, tsp, lb) & infers missing cook times
-              </p>
-            </div>
-          )}
-        </div>
+        {/* Admin tools - only visible when logged in as family */}
+        {isFamily && (
+          <div style={{ textAlign: 'center', marginTop: 32 }}>
+            <button 
+              onClick={() => setShowAdminTools(!showAdminTools)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#c9c4bc',
+                fontSize: 11,
+                cursor: 'pointer',
+                letterSpacing: 1,
+              }}
+            >
+              {showAdminTools ? '✕ Hide Tools' : '⚙ Admin Tools'}
+            </button>
+            
+            {showAdminTools && (
+              <div style={{ marginTop: 16, padding: 20, background: '#f5f3ef', borderRadius: 4 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'center', marginBottom: 12 }}>
+                  <button 
+                    onClick={onNormalizeAll} 
+                    disabled={isProcessing} 
+                    style={styles.adminToolBtn}
+                  >
+                    {isProcessing ? 'Processing...' : 'Normalize Units'}
+                  </button>
+                  <button 
+                    onClick={onMigrateIngredients} 
+                    disabled={isProcessing} 
+                    style={styles.adminToolBtn}
+                  >
+                    Migrate Ingredients
+                  </button>
+                  {trashedCount > 0 && (
+                    <button 
+                      onClick={onEmptyTrash} 
+                      disabled={isProcessing} 
+                      style={{...styles.adminToolBtn, backgroundColor: '#9b6b5b'}}
+                    >
+                      Empty Trash ({trashedCount})
+                    </button>
+                  )}
+                </div>
+                <p style={{ fontSize: 11, color: '#7a7a7a', margin: 0 }}>
+                  Normalize: fix units & fractions • Migrate: convert to qty/unit/ingredient format
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </section>
     </div>
   );
@@ -1181,6 +1470,181 @@ function RecipeCard({ recipe, categories, onClick, isFavorite, onToggleFavorite 
 }
 
 // ============================================
+// TRASH PAGE
+// ============================================
+function TrashPage({ trashedRecipes, categories, onRestore, onPermanentDelete, onEmptyTrash, onBack, isProcessing }) {
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric' 
+    });
+  };
+
+  return (
+    <div style={styles.trashPage}>
+      <div style={styles.trashHeader}>
+        <button onClick={onBack} style={styles.backBtn}>← Back to Recipes</button>
+        <h1 style={styles.trashTitle}>Trash</h1>
+        <p style={styles.trashSubtitle}>
+          {trashedRecipes.length} {trashedRecipes.length === 1 ? 'recipe' : 'recipes'} in trash
+        </p>
+      </div>
+
+      {trashedRecipes.length > 0 ? (
+        <>
+          <div style={styles.trashActions}>
+            <button 
+              onClick={onEmptyTrash}
+              disabled={isProcessing}
+              style={styles.emptyTrashBtn}
+            >
+              {isProcessing ? 'Deleting...' : 'Empty Trash'}
+            </button>
+            <p style={styles.trashWarning}>⚠ Emptying trash permanently deletes all recipes and cannot be undone.</p>
+          </div>
+
+          <div style={styles.trashList}>
+            {trashedRecipes.map(recipe => {
+              const category = categories.find(c => c.id === recipe.category);
+              return (
+                <div key={recipe.id} style={styles.trashItem}>
+                  <div style={styles.trashItemInfo}>
+                    <h3 style={styles.trashItemTitle}>{recipe.title}</h3>
+                    <p style={styles.trashItemMeta}>
+                      {category && `${category.name} • `}
+                      {recipe.author && `${recipe.author} • `}
+                      Deleted {formatDate(recipe.trashedAt)}
+                    </p>
+                  </div>
+                  <div style={styles.trashItemActions}>
+                    <button 
+                      onClick={() => onRestore(recipe.id)}
+                      style={styles.restoreBtn}
+                    >
+                      Restore
+                    </button>
+                    <button 
+                      onClick={() => {
+                        if (confirm(`Permanently delete "${recipe.title}"? This cannot be undone.`)) {
+                          onPermanentDelete(recipe.id, recipe.imageUrl, recipe.handwrittenImageUrl);
+                        }
+                      }}
+                      style={styles.permanentDeleteBtn}
+                    >
+                      Delete Forever
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <div style={styles.emptyTrash}>
+          <div style={styles.emptyIcon}>✓</div>
+          <h3 style={styles.emptyTitle}>Trash is empty</h3>
+          <p style={styles.emptyText}>Deleted recipes will appear here.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// INGREDIENT ROW WITH UNIT AUTOCOMPLETE
+// ============================================
+function IngredientRow({ ingredient, index, onUpdate, onRemove, canRemove }) {
+  const [showUnitSuggestions, setShowUnitSuggestions] = useState(false);
+  const [unitSuggestions, setUnitSuggestions] = useState([]);
+  
+  // Handle both old format {amount, ingredient} and new format {qty, unit, ingredient}
+  const qty = ingredient.qty !== undefined ? ingredient.qty : '';
+  const unit = ingredient.unit !== undefined ? ingredient.unit : '';
+  const item = ingredient.ingredient || '';
+  
+  // If old format, try to parse amount into qty and unit
+  const isOldFormat = ingredient.amount !== undefined && ingredient.qty === undefined;
+  
+  const handleUnitChange = (value) => {
+    onUpdate(index, 'unit', value);
+    
+    // Show suggestions
+    if (value) {
+      const suggestions = STANDARD_UNITS.filter(u => 
+        u.toLowerCase().startsWith(value.toLowerCase())
+      ).slice(0, 5);
+      setUnitSuggestions(suggestions);
+      setShowUnitSuggestions(suggestions.length > 0);
+    } else {
+      setShowUnitSuggestions(false);
+    }
+  };
+  
+  const selectUnit = (selectedUnit) => {
+    onUpdate(index, 'unit', selectedUnit);
+    setShowUnitSuggestions(false);
+  };
+
+  return (
+    <div style={styles.ingredientRow}>
+      <input
+        type="text"
+        value={isOldFormat ? ingredient.amount : qty}
+        onChange={(e) => onUpdate(index, isOldFormat ? 'amount' : 'qty', e.target.value)}
+        placeholder="1"
+        style={styles.qtyInput}
+      />
+      <div style={styles.unitInputWrapper}>
+        <input
+          type="text"
+          value={isOldFormat ? '' : unit}
+          onChange={(e) => handleUnitChange(e.target.value)}
+          onFocus={() => {
+            if (unit) handleUnitChange(unit);
+          }}
+          onBlur={() => setTimeout(() => setShowUnitSuggestions(false), 150)}
+          placeholder="cup"
+          style={styles.unitInput}
+          disabled={isOldFormat}
+        />
+        {showUnitSuggestions && unitSuggestions.length > 0 && (
+          <div style={styles.unitSuggestions}>
+            {unitSuggestions.map((suggestion, i) => (
+              <button
+                key={i}
+                type="button"
+                style={styles.unitSuggestion}
+                onMouseDown={() => selectUnit(suggestion)}
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <input
+        type="text"
+        value={item}
+        onChange={(e) => onUpdate(index, 'ingredient', e.target.value)}
+        placeholder="all-purpose flour"
+        style={styles.ingredientInput}
+      />
+      <button 
+        type="button" 
+        onClick={onRemove} 
+        style={styles.removeBtn}
+        disabled={!canRemove}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+// ============================================
 // ADD RECIPE PAGE
 // ============================================
 function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, setIsProcessing, showNotification, uploadImage }) {
@@ -1216,7 +1680,7 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
   const addIngredient = () => {
     setFormData(prev => ({
       ...prev,
-      ingredients: [...prev.ingredients, { amount: '', ingredient: '' }]
+      ingredients: [...prev.ingredients, { qty: '', unit: '', ingredient: '' }]
     }));
   };
 
@@ -1227,6 +1691,13 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
         ingredients: prev.ingredients.filter((_, i) => i !== index)
       }));
     }
+  };
+
+  // Unit autocomplete suggestions
+  const getUnitSuggestions = (input) => {
+    if (!input) return [];
+    const lower = input.toLowerCase();
+    return STANDARD_UNITS.filter(u => u.toLowerCase().startsWith(lower)).slice(0, 5);
   };
 
   const updateInstruction = (index, value) => {
@@ -1493,7 +1964,7 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
             style={activeTab === 'website' ? styles.tabActive : styles.tab}
             onClick={() => setActiveTab('website')}
           >
-            From website
+            From website or document
           </button>
         </div>
       )}
@@ -1707,7 +2178,7 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
                       onChange={() => updateField('authorIsFamily', true)}
                       style={styles.radio}
                     />
-                    <span>Family / Friend</span>
+                    <span>Family Member</span>
                     <span style={styles.radioHint}>(shows in filter)</span>
                   </label>
                   <label style={styles.radioLabel}>
@@ -1718,7 +2189,8 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
                       onChange={() => updateField('authorIsFamily', false)}
                       style={styles.radio}
                     />
-                    <span>Website / Cookbook</span>
+                    <span>Website / Cookbook / Friend</span>
+                    <span style={styles.radioHint}>(not in filter)</span>
                   </label>
                 </div>
               </div>
@@ -1804,25 +2276,14 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
           <div style={styles.formSection}>
             <h3 style={styles.formSectionTitle}>Ingredients</h3>
             {formData.ingredients.map((ing, index) => (
-              <div key={index} style={styles.ingredientRow}>
-                <input
-                  type="text"
-                  value={ing.amount}
-                  onChange={(e) => updateIngredient(index, 'amount', e.target.value)}
-                  placeholder="1 cup"
-                  style={styles.amountInput}
-                />
-                <input
-                  type="text"
-                  value={ing.ingredient}
-                  onChange={(e) => updateIngredient(index, 'ingredient', e.target.value)}
-                  placeholder="all-purpose flour"
-                  style={styles.ingredientInput}
-                />
-                <button type="button" onClick={() => removeIngredient(index)} style={styles.removeBtn}>
-                  ×
-                </button>
-              </div>
+              <IngredientRow
+                key={index}
+                ingredient={ing}
+                index={index}
+                onUpdate={updateIngredient}
+                onRemove={() => removeIngredient(index)}
+                canRemove={formData.ingredients.length > 1}
+              />
             ))}
             <button type="button" onClick={addIngredient} style={styles.addItemBtn}>
               + Add ingredient
@@ -1879,7 +2340,7 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
 // ============================================
 // RECIPE DETAIL PAGE
 // ============================================
-function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddComment, onDeleteComment, onShare, onMadeIt, isFavorite, onToggleFavorite }) {
+function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddComment, onDeleteComment, onShare, onMadeIt, isFavorite, onToggleFavorite, isFamily }) {
   const category = categories.find(c => c.id === recipe.category);
   const [imageError, setImageError] = useState(false);
   const [handwrittenImageError, setHandwrittenImageError] = useState(false);
@@ -1916,6 +2377,24 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
     });
   };
 
+  // Helper to format ingredient display (handles both old and new format)
+  const formatIngredient = (ing, multiplier = 1) => {
+    // New format: {qty, unit, ingredient}
+    if (ing.qty !== undefined) {
+      const scaledQty = ing.qty ? (parseFloat(ing.qty) * multiplier) : '';
+      const displayQty = scaledQty ? formatQtyDisplay(scaledQty) : '';
+      return {
+        amount: `${displayQty} ${ing.unit || ''}`.trim(),
+        ingredient: ing.ingredient || ''
+      };
+    }
+    // Old format: {amount, ingredient}
+    return {
+      amount: scaleIngredientAmount(ing.amount, multiplier),
+      ingredient: ing.ingredient || ''
+    };
+  };
+
   return (
     <div style={styles.detailPage}>
       <div style={styles.detailNav} className="no-print">
@@ -1926,8 +2405,12 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
           </button>
           <button onClick={onShare} style={styles.actionBtn}>Share</button>
           <button onClick={() => window.print()} style={styles.actionBtn}>Print</button>
-          <button onClick={onEdit} style={styles.actionBtn}>Edit</button>
-          <button onClick={onDelete} style={styles.deleteBtn}>Delete</button>
+          {isFamily && (
+            <>
+              <button onClick={onEdit} style={styles.actionBtn}>Edit</button>
+              <button onClick={onDelete} style={styles.deleteBtn}>Delete</button>
+            </>
+          )}
         </div>
       </div>
 
@@ -1957,8 +2440,9 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
               {recipe.servings && <span>Serves {recipe.servings}</span>}
             </div>
             
-            {/* Made It section */}
-            <div style={styles.madeItSection} className="no-print">
+            {/* Made It section - only for family */}
+            {isFamily && (
+              <div style={styles.madeItSection} className="no-print">
               {recipe.madeIt && recipe.madeIt.length > 0 && (
                 <p style={styles.madeItList}>
                   ✓ Made by: {recipe.madeIt.map(m => m.name).join(', ')}
@@ -1982,7 +2466,17 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
                   <button onClick={() => setShowMadeItForm(false)} style={styles.madeItCancel}>✕</button>
                 </div>
               )}
-            </div>
+              </div>
+            )}
+            
+            {/* Show made it list for non-family users (read-only) */}
+            {!isFamily && recipe.madeIt && recipe.madeIt.length > 0 && (
+              <div style={styles.madeItSection} className="no-print">
+                <p style={styles.madeItList}>
+                  ✓ Made by: {recipe.madeIt.map(m => m.name).join(', ')}
+                </p>
+              </div>
+            )}
           </header>
 
           {/* Story section */}
@@ -2026,11 +2520,14 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
             <section style={styles.ingredientsCol}>
               <h2 style={styles.colTitle}>Ingredients</h2>
               <ul style={styles.ingredientsList}>
-                {recipe.ingredients?.map((ing, i) => (
-                  <li key={i} style={styles.ingredientItem}>
-                    <strong>{scaleIngredientAmount(ing.amount, servingsMultiplier)}</strong> {ing.ingredient}
-                  </li>
-                ))}
+                {recipe.ingredients?.map((ing, i) => {
+                  const formatted = formatIngredient(ing, servingsMultiplier);
+                  return (
+                    <li key={i} style={styles.ingredientItem}>
+                      <strong>{formatted.amount}</strong> {formatted.ingredient}
+                    </li>
+                  );
+                })}
               </ul>
             </section>
 
@@ -3399,6 +3896,212 @@ const styles = {
     fontStyle: 'italic',
     textAlign: 'center',
     padding: '24px 0',
+  },
+
+  // Family login modal
+  familyLoginModal: {
+    background: 'white',
+    padding: 40,
+    borderRadius: 4,
+    maxWidth: 400,
+    width: '90%',
+    textAlign: 'center',
+    position: 'relative',
+  },
+  familyLoginTitle: {
+    fontFamily: "'Cormorant Garamond', Georgia, serif",
+    fontSize: 28,
+    color: '#2d2d2d',
+    marginBottom: 12,
+  },
+  familyLoginText: {
+    fontSize: 14,
+    color: '#6a6a6a',
+    marginBottom: 24,
+  },
+  familyCodeInput: {
+    width: '100%',
+    padding: '14px 16px',
+    fontSize: 16,
+    border: '1px solid #d9d6d0',
+    borderRadius: 2,
+    outline: 'none',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  familyLoginBtn: {
+    width: '100%',
+    padding: '14px 32px',
+    background: '#5c6d5e',
+    color: 'white',
+    border: 'none',
+    borderRadius: 2,
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: 'pointer',
+  },
+  familyBtn: {
+    background: 'none',
+    border: '1px solid #8a9a8e',
+    padding: '8px 16px',
+    fontSize: 12,
+    color: '#5c6d5e',
+    cursor: 'pointer',
+    borderRadius: 2,
+    fontWeight: 500,
+    letterSpacing: 0.5,
+  },
+
+  // Admin tool button
+  adminToolBtn: {
+    padding: '12px 24px',
+    background: '#5c6d5e',
+    color: 'white',
+    border: 'none',
+    borderRadius: 2,
+    fontSize: 12,
+    cursor: 'pointer',
+  },
+
+  // Trash page
+  trashPage: {
+    maxWidth: 800,
+    margin: '0 auto',
+    padding: '40px 24px',
+  },
+  trashHeader: {
+    marginBottom: 32,
+  },
+  trashTitle: {
+    fontFamily: "'Cormorant Garamond', Georgia, serif",
+    fontSize: 36,
+    color: '#2d2d2d',
+    marginBottom: 8,
+    marginTop: 24,
+  },
+  trashSubtitle: {
+    fontSize: 14,
+    color: '#7a7a7a',
+  },
+  trashActions: {
+    marginBottom: 32,
+    padding: 20,
+    background: '#faf5f3',
+    borderRadius: 4,
+    border: '1px solid #e8d8d0',
+  },
+  emptyTrashBtn: {
+    padding: '12px 24px',
+    background: '#9b6b5b',
+    color: 'white',
+    border: 'none',
+    borderRadius: 2,
+    fontSize: 12,
+    fontWeight: 500,
+    cursor: 'pointer',
+    marginBottom: 12,
+  },
+  trashWarning: {
+    fontSize: 12,
+    color: '#9b6b5b',
+    margin: 0,
+  },
+  trashList: {},
+  trashItem: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '20px 0',
+    borderBottom: '1px solid #e8e6e2',
+    flexWrap: 'wrap',
+    gap: 16,
+  },
+  trashItemInfo: {
+    flex: 1,
+    minWidth: 200,
+  },
+  trashItemTitle: {
+    fontSize: 16,
+    fontWeight: 500,
+    color: '#2d2d2d',
+    marginBottom: 4,
+  },
+  trashItemMeta: {
+    fontSize: 12,
+    color: '#7a7a7a',
+    margin: 0,
+  },
+  trashItemActions: {
+    display: 'flex',
+    gap: 8,
+  },
+  restoreBtn: {
+    padding: '8px 16px',
+    background: '#5c6d5e',
+    color: 'white',
+    border: 'none',
+    borderRadius: 2,
+    fontSize: 12,
+    cursor: 'pointer',
+  },
+  permanentDeleteBtn: {
+    padding: '8px 16px',
+    background: 'transparent',
+    color: '#9b6b5b',
+    border: '1px solid #c9a89a',
+    borderRadius: 2,
+    fontSize: 12,
+    cursor: 'pointer',
+  },
+  emptyTrash: {
+    textAlign: 'center',
+    padding: '60px 20px',
+  },
+
+  // Ingredient row (new format)
+  qtyInput: {
+    width: 60,
+    padding: '12px 10px',
+    fontSize: 14,
+    border: '1px solid #d9d6d0',
+    borderRadius: 2,
+    outline: 'none',
+    textAlign: 'center',
+  },
+  unitInputWrapper: {
+    position: 'relative',
+    width: 80,
+  },
+  unitInput: {
+    width: '100%',
+    padding: '12px 10px',
+    fontSize: 14,
+    border: '1px solid #d9d6d0',
+    borderRadius: 2,
+    outline: 'none',
+  },
+  unitSuggestions: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    background: 'white',
+    border: '1px solid #d9d6d0',
+    borderTop: 'none',
+    borderRadius: '0 0 2px 2px',
+    zIndex: 10,
+    boxShadow: '0 4px 8px rgba(0,0,0,0.1)',
+  },
+  unitSuggestion: {
+    display: 'block',
+    width: '100%',
+    padding: '8px 10px',
+    background: 'white',
+    border: 'none',
+    textAlign: 'left',
+    fontSize: 13,
+    cursor: 'pointer',
+    color: '#4a4a4a',
   },
 };
 

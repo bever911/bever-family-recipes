@@ -2428,11 +2428,40 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
     });
   };
 
+  // Helper to parse qty string (handles fractions like "1/2" or "1 1/2")
+  const parseQtyString = (qtyStr) => {
+    if (!qtyStr) return 0;
+    const str = String(qtyStr).trim();
+    
+    // Already a number
+    if (!isNaN(parseFloat(str)) && !str.includes('/')) {
+      return parseFloat(str);
+    }
+    
+    // Mixed number like "1 1/2"
+    const mixedMatch = str.match(/^(\d+)\s+(\d+)\/(\d+)$/);
+    if (mixedMatch) {
+      const [, whole, num, den] = mixedMatch;
+      return parseInt(whole) + (parseInt(num) / parseInt(den));
+    }
+    
+    // Simple fraction like "1/2"
+    const fracMatch = str.match(/^(\d+)\/(\d+)$/);
+    if (fracMatch) {
+      const [, num, den] = fracMatch;
+      return parseInt(num) / parseInt(den);
+    }
+    
+    // Fallback
+    return parseFloat(str) || 0;
+  };
+
   // Helper to format ingredient display (handles both old and new format)
   const formatIngredient = (ing, multiplier = 1) => {
     // New format: {qty, unit, ingredient}
     if (ing.qty !== undefined) {
-      const scaledQty = ing.qty ? (parseFloat(ing.qty) * multiplier) : '';
+      const parsedQty = parseQtyString(ing.qty);
+      const scaledQty = parsedQty * multiplier;
       const displayQty = scaledQty ? formatQtyDisplay(scaledQty) : '';
       return {
         amount: `${displayQty} ${ing.unit || ''}`.trim(),

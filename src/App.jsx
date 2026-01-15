@@ -718,26 +718,73 @@ export default function App() {
     setIsProcessing(true);
     let updated = 0;
     
+    // Helper to parse amount string like "1/3 cup" or "2 tbsp" into {qty, unit}
+    const parseAmount = (amount) => {
+      if (!amount) return { qty: '', unit: '' };
+      
+      const str = amount.trim();
+      
+      // Match patterns like: "1/3 cup", "1 1/2 cups", "2 tbsp", "3", "1/4"
+      // Pattern: optional whole number, optional fraction, optional unit
+      const match = str.match(/^(\d+)?\s*([\d\/]+)?\s*(.*)$/);
+      
+      if (!match) return { qty: str, unit: '' };
+      
+      const [, whole, fraction, unit] = match;
+      
+      let qty = '';
+      if (whole && fraction) {
+        // "1 1/2" -> combine
+        qty = `${whole} ${fraction}`;
+      } else if (whole) {
+        qty = whole;
+      } else if (fraction) {
+        qty = fraction;
+      }
+      
+      return { 
+        qty: qty.trim(), 
+        unit: (unit || '').trim() 
+      };
+    };
+    
     try {
       for (const recipe of recipes) {
         if (!recipe.ingredients || recipe.ingredients.length === 0) continue;
         
-        // Check if already in new format
-        const needsMigration = recipe.ingredients.some(ing => ing.amount !== undefined && ing.qty === undefined);
+        // Check if needs migration (has old amount field)
+        const needsMigration = recipe.ingredients.some(ing => 
+          ing.amount !== undefined || (ing.qty === undefined && ing.unit === undefined)
+        );
         if (!needsMigration) continue;
         
         const newIngredients = recipe.ingredients.map(ing => {
-          // Already new format
-          if (ing.qty !== undefined) return ing;
+          // Already new format with qty defined
+          if (ing.qty !== undefined && ing.unit !== undefined) return ing;
           
           // Migrate from old format
           const amount = ing.amount || '';
-          const parsed = parseIngredientString(amount + ' ' + (ing.ingredient || ''));
+          const { qty, unit } = parseAmount(amount);
+          
+          // Check if ingredient field has unit info that got misplaced (like "/3 cup flour")
+          let ingredientText = ing.ingredient || '';
+          if (ingredientText.startsWith('/')) {
+            // Fix misplaced fraction: "/3 cup flour" -> qty should include this
+            const fixMatch = ingredientText.match(/^\/(\d+)\s+(\w+)\s+(.*)$/);
+            if (fixMatch) {
+              const [, fracPart, unitPart, actualIngredient] = fixMatch;
+              return {
+                qty: qty ? `${qty}/${fracPart}` : `1/${fracPart}`,
+                unit: unitPart,
+                ingredient: actualIngredient.trim()
+              };
+            }
+          }
           
           return {
-            qty: parsed.quantity || '',
-            unit: parsed.unit || '',
-            ingredient: parsed.item || ing.ingredient || ''
+            qty: qty,
+            unit: unit,
+            ingredient: ingredientText
           };
         });
         
@@ -1589,15 +1636,16 @@ function IngredientRow({ ingredient, index, onUpdate, onRemove, canRemove }) {
   };
 
   return (
-    <div style={styles.ingredientRow}>
+    <div style={styles.ingredientRow} className="ingredient-row">
       <input
         type="text"
         value={isOldFormat ? ingredient.amount : qty}
         onChange={(e) => onUpdate(index, isOldFormat ? 'amount' : 'qty', e.target.value)}
         placeholder="1"
         style={styles.qtyInput}
+        className="qty-input"
       />
-      <div style={styles.unitInputWrapper}>
+      <div style={styles.unitInputWrapper} className="unit-wrapper">
         <input
           type="text"
           value={isOldFormat ? '' : unit}
@@ -1609,6 +1657,7 @@ function IngredientRow({ ingredient, index, onUpdate, onRemove, canRemove }) {
           placeholder="cup"
           style={styles.unitInput}
           disabled={isOldFormat}
+          className="unit-input"
         />
         {showUnitSuggestions && unitSuggestions.length > 0 && (
           <div style={styles.unitSuggestions}>
@@ -1631,12 +1680,14 @@ function IngredientRow({ ingredient, index, onUpdate, onRemove, canRemove }) {
         onChange={(e) => onUpdate(index, 'ingredient', e.target.value)}
         placeholder="all-purpose flour"
         style={styles.ingredientInput}
+        className="ingredient-input"
       />
       <button 
         type="button" 
         onClick={onRemove} 
         style={styles.removeBtn}
         disabled={!canRemove}
+        className="remove-btn"
       >
         ×
       </button>
@@ -4200,10 +4251,33 @@ if (typeof window !== 'undefined') {
         padding: 32px 20px !important;
       }
       
-      div[style*="ingredientRow"] {
-        flex-wrap: wrap;
+      /* Ingredient row - stack on mobile */
+      .ingredient-row {
+        flex-wrap: wrap !important;
+        gap: 8px !important;
       }
       
+      .qty-input {
+        width: 55px !important;
+        min-width: 55px !important;
+        flex: 0 0 55px !important;
+      }
+      
+      .unit-wrapper {
+        width: 70px !important;
+        flex: 0 0 70px !important;
+      }
+      
+      .ingredient-input {
+        flex: 1 1 calc(100% - 160px) !important;
+        min-width: 120px !important;
+      }
+      
+      .remove-btn {
+        flex: 0 0 30px !important;
+      }
+      
+      /* Legacy amount input */
       input[style*="amountInput"] {
         width: 80px !important;
         flex-shrink: 0;

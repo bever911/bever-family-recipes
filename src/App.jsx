@@ -76,7 +76,7 @@ const SORT_OPTIONS = [
 // Standard units for autocomplete
 const STANDARD_UNITS = [
   'cup', 'cups',
-  'tbsp', 'tsp',
+  'Tbsp', 'tsp',
   'oz', 'lb',
   'g', 'kg', 'ml', 'liter',
   'pint', 'quart', 'gallon',
@@ -101,7 +101,9 @@ const EMPTY_RECIPE = {
   notes: '',
   story: '',
   imageUrl: '',
+  imageCaption: '', // Caption for finished dish photo (for cookbook)
   handwrittenImageUrl: '',
+  handwrittenImageCaption: '', // Caption for original recipe card (for cookbook)
   dateAdded: '',
   trashedAt: null, // For trash system
   comments: [],
@@ -115,8 +117,8 @@ const TARGET_ASPECT_RATIO = 4 / 3;
 // UNIT NORMALIZATION
 // ============================================
 const UNIT_MAPPINGS = {
-  // Volume
-  'tablespoons': 'tbsp', 'tablespoon': 'tbsp', 'tbsps': 'tbsp', 'tbs': 'tbsp', 'T': 'tbsp',
+  // Volume - Note: Tbsp is capitalized to visually distinguish from tsp
+  'tablespoons': 'Tbsp', 'tablespoon': 'Tbsp', 'tbsps': 'Tbsp', 'tbs': 'Tbsp', 'T': 'Tbsp', 'tbsp': 'Tbsp',
   'teaspoons': 'tsp', 'teaspoon': 'tsp', 'tsps': 'tsp', 't': 'tsp', 't.': 'tsp',
   'cups': 'cup', 'c': 'cup', 'C': 'cup', 'c.': 'cup',
   'ounces': 'oz', 'ounce': 'oz', 'ozs': 'oz',
@@ -718,73 +720,26 @@ export default function App() {
     setIsProcessing(true);
     let updated = 0;
     
-    // Helper to parse amount string like "1/3 cup" or "2 tbsp" into {qty, unit}
-    const parseAmount = (amount) => {
-      if (!amount) return { qty: '', unit: '' };
-      
-      const str = amount.trim();
-      
-      // Match patterns like: "1/3 cup", "1 1/2 cups", "2 tbsp", "3", "1/4"
-      // Pattern: optional whole number, optional fraction, optional unit
-      const match = str.match(/^(\d+)?\s*([\d\/]+)?\s*(.*)$/);
-      
-      if (!match) return { qty: str, unit: '' };
-      
-      const [, whole, fraction, unit] = match;
-      
-      let qty = '';
-      if (whole && fraction) {
-        // "1 1/2" -> combine
-        qty = `${whole} ${fraction}`;
-      } else if (whole) {
-        qty = whole;
-      } else if (fraction) {
-        qty = fraction;
-      }
-      
-      return { 
-        qty: qty.trim(), 
-        unit: (unit || '').trim() 
-      };
-    };
-    
     try {
       for (const recipe of recipes) {
         if (!recipe.ingredients || recipe.ingredients.length === 0) continue;
         
-        // Check if needs migration (has old amount field)
-        const needsMigration = recipe.ingredients.some(ing => 
-          ing.amount !== undefined || (ing.qty === undefined && ing.unit === undefined)
-        );
+        // Check if already in new format
+        const needsMigration = recipe.ingredients.some(ing => ing.amount !== undefined && ing.qty === undefined);
         if (!needsMigration) continue;
         
         const newIngredients = recipe.ingredients.map(ing => {
-          // Already new format with qty defined
-          if (ing.qty !== undefined && ing.unit !== undefined) return ing;
+          // Already new format
+          if (ing.qty !== undefined) return ing;
           
           // Migrate from old format
           const amount = ing.amount || '';
-          const { qty, unit } = parseAmount(amount);
-          
-          // Check if ingredient field has unit info that got misplaced (like "/3 cup flour")
-          let ingredientText = ing.ingredient || '';
-          if (ingredientText.startsWith('/')) {
-            // Fix misplaced fraction: "/3 cup flour" -> qty should include this
-            const fixMatch = ingredientText.match(/^\/(\d+)\s+(\w+)\s+(.*)$/);
-            if (fixMatch) {
-              const [, fracPart, unitPart, actualIngredient] = fixMatch;
-              return {
-                qty: qty ? `${qty}/${fracPart}` : `1/${fracPart}`,
-                unit: unitPart,
-                ingredient: actualIngredient.trim()
-              };
-            }
-          }
+          const parsed = parseIngredientString(amount + ' ' + (ing.ingredient || ''));
           
           return {
-            qty: qty,
-            unit: unit,
-            ingredient: ingredientText
+            qty: parsed.quantity || '',
+            unit: parsed.unit || '',
+            ingredient: parsed.item || ing.ingredient || ''
           };
         });
         
@@ -935,13 +890,12 @@ export default function App() {
     if (!file) return null;
     
     try {
-      // Process image to consistent aspect ratio
-      const processedFile = await processImageForUpload(file);
-      
-      const fileName = `${folder}/${Date.now()}_${file.name.replace(/\.[^.]+$/, '.jpg')}`;
+      // Upload original file without compression to preserve full resolution for cookbook printing
+      // The display will use CSS (object-fit) to show images properly without modifying the source
+      const fileName = `${folder}/${Date.now()}_${file.name}`;
       const imageRef = ref(storage, fileName);
       
-      await uploadBytes(imageRef, processedFile);
+      await uploadBytes(imageRef, file);
       return await getDownloadURL(imageRef);
     } catch (error) {
       console.error('Upload error:', error);
@@ -1401,7 +1355,8 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
           </div>
         )}
 
-        {/* Admin tools - only visible when logged in as family */}
+        {/* Admin tools - HIDDEN (all recipes normalized)
+            To re-enable: uncomment this section
         {isFamily && (
           <div style={{ textAlign: 'center', marginTop: 32 }}>
             <button 
@@ -1452,6 +1407,7 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
             )}
           </div>
         )}
+        */}
       </section>
     </div>
   );
@@ -1636,16 +1592,15 @@ function IngredientRow({ ingredient, index, onUpdate, onRemove, canRemove }) {
   };
 
   return (
-    <div style={styles.ingredientRow} className="ingredient-row">
+    <div style={styles.ingredientRow}>
       <input
         type="text"
         value={isOldFormat ? ingredient.amount : qty}
         onChange={(e) => onUpdate(index, isOldFormat ? 'amount' : 'qty', e.target.value)}
         placeholder="1"
         style={styles.qtyInput}
-        className="qty-input"
       />
-      <div style={styles.unitInputWrapper} className="unit-wrapper">
+      <div style={styles.unitInputWrapper}>
         <input
           type="text"
           value={isOldFormat ? '' : unit}
@@ -1656,8 +1611,6 @@ function IngredientRow({ ingredient, index, onUpdate, onRemove, canRemove }) {
           onBlur={() => setTimeout(() => setShowUnitSuggestions(false), 150)}
           placeholder="cup"
           style={styles.unitInput}
-          disabled={isOldFormat}
-          className="unit-input"
         />
         {showUnitSuggestions && unitSuggestions.length > 0 && (
           <div style={styles.unitSuggestions}>
@@ -1680,14 +1633,12 @@ function IngredientRow({ ingredient, index, onUpdate, onRemove, canRemove }) {
         onChange={(e) => onUpdate(index, 'ingredient', e.target.value)}
         placeholder="all-purpose flour"
         style={styles.ingredientInput}
-        className="ingredient-input"
       />
       <button 
         type="button" 
         onClick={onRemove} 
         style={styles.removeBtn}
         disabled={!canRemove}
-        className="remove-btn"
       >
         ×
       </button>
@@ -1971,9 +1922,11 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
       const cleanedData = {
         ...formData,
         imageUrl,
+        imageCaption: formData.imageCaption || '',
         handwrittenImageUrl,
+        handwrittenImageCaption: formData.handwrittenImageCaption || '',
         ingredients: Array.isArray(formData.ingredients) 
-          ? formData.ingredients.filter(i => i.amount || i.ingredient)
+          ? formData.ingredients.filter(i => i.amount || i.ingredient || i.qty)
           : [],
         instructions: Array.isArray(formData.instructions)
           ? formData.instructions.filter(i => i && i.trim())
@@ -2250,6 +2203,7 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
 
           <div style={styles.formSection}>
             <h3 style={styles.formSectionTitle}>Photos</h3>
+            <p style={styles.fieldHint}>Add photos and optional captions for the future cookbook</p>
             
             <div style={styles.photoGrid}>
               <div style={styles.photoUploadArea}>
@@ -2279,6 +2233,13 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
                   onChange={handleRecipePhotoSelect}
                   style={{ display: 'none' }}
                 />
+                <input
+                  type="text"
+                  value={formData.imageCaption || ''}
+                  onChange={(e) => updateField('imageCaption', e.target.value)}
+                  placeholder="Caption (e.g., Christmas 2023)"
+                  style={{ ...styles.input, marginTop: 8, fontSize: 13 }}
+                />
               </div>
               
               <div style={styles.photoUploadArea}>
@@ -2307,6 +2268,13 @@ function AddRecipePage({ recipe, categories, onSave, onCancel, isProcessing, set
                   accept="image/*"
                   onChange={handleHandwrittenPhotoSelect}
                   style={{ display: 'none' }}
+                />
+                <input
+                  type="text"
+                  value={formData.handwrittenImageCaption || ''}
+                  onChange={(e) => updateField('handwrittenImageCaption', e.target.value)}
+                  placeholder="Caption (e.g., Grandma's original 1965 card)"
+                  style={{ ...styles.input, marginTop: 8, fontSize: 13 }}
                 />
               </div>
             </div>
@@ -2428,41 +2396,34 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
     });
   };
 
-  // Helper to parse qty string (handles fractions like "1/2" or "1 1/2")
-  const parseQtyString = (qtyStr) => {
-    if (!qtyStr) return 0;
-    const str = String(qtyStr).trim();
-    
-    // Already a number
-    if (!isNaN(parseFloat(str)) && !str.includes('/')) {
-      return parseFloat(str);
-    }
-    
-    // Mixed number like "1 1/2"
-    const mixedMatch = str.match(/^(\d+)\s+(\d+)\/(\d+)$/);
-    if (mixedMatch) {
-      const [, whole, num, den] = mixedMatch;
-      return parseInt(whole) + (parseInt(num) / parseInt(den));
-    }
-    
-    // Simple fraction like "1/2"
-    const fracMatch = str.match(/^(\d+)\/(\d+)$/);
-    if (fracMatch) {
-      const [, num, den] = fracMatch;
-      return parseInt(num) / parseInt(den);
-    }
-    
-    // Fallback
-    return parseFloat(str) || 0;
-  };
-
   // Helper to format ingredient display (handles both old and new format)
   const formatIngredient = (ing, multiplier = 1) => {
     // New format: {qty, unit, ingredient}
     if (ing.qty !== undefined) {
-      const parsedQty = parseQtyString(ing.qty);
-      const scaledQty = parsedQty * multiplier;
-      const displayQty = scaledQty ? formatQtyDisplay(scaledQty) : '';
+      let displayQty = '';
+      const qtyStr = String(ing.qty || '').trim();
+      
+      // Check if qty contains a range (e.g., "7-9" or "2 to 3")
+      const isRange = /^\d+\s*(-|to)\s*\d+$/.test(qtyStr);
+      
+      if (isRange && multiplier === 1) {
+        // Preserve range as-is when not scaling
+        displayQty = qtyStr;
+      } else if (isRange && multiplier !== 1) {
+        // Scale both parts of the range
+        const rangeMatch = qtyStr.match(/^(\d+)\s*(-|to)\s*(\d+)$/);
+        if (rangeMatch) {
+          const low = parseFloat(rangeMatch[1]) * multiplier;
+          const separator = rangeMatch[2];
+          const high = parseFloat(rangeMatch[3]) * multiplier;
+          displayQty = `${formatQtyDisplay(low)}${separator}${formatQtyDisplay(high)}`;
+        }
+      } else if (qtyStr) {
+        // Regular number - scale and format
+        const scaledQty = parseFloat(qtyStr) * multiplier;
+        displayQty = isNaN(scaledQty) ? qtyStr : formatQtyDisplay(scaledQty);
+      }
+      
       return {
         amount: `${displayQty} ${ing.unit || ''}`.trim(),
         ingredient: ing.ingredient || ''
@@ -4280,33 +4241,10 @@ if (typeof window !== 'undefined') {
         padding: 32px 20px !important;
       }
       
-      /* Ingredient row - stack on mobile */
-      .ingredient-row {
-        flex-wrap: wrap !important;
-        gap: 8px !important;
+      div[style*="ingredientRow"] {
+        flex-wrap: wrap;
       }
       
-      .qty-input {
-        width: 55px !important;
-        min-width: 55px !important;
-        flex: 0 0 55px !important;
-      }
-      
-      .unit-wrapper {
-        width: 70px !important;
-        flex: 0 0 70px !important;
-      }
-      
-      .ingredient-input {
-        flex: 1 1 calc(100% - 160px) !important;
-        min-width: 120px !important;
-      }
-      
-      .remove-btn {
-        flex: 0 0 30px !important;
-      }
-      
-      /* Legacy amount input */
       input[style*="amountInput"] {
         width: 80px !important;
         flex-shrink: 0;

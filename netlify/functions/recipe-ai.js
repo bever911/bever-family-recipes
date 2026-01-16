@@ -99,10 +99,13 @@ exports.handler = async (event, context) => {
   "servings": "yield",
   "prepTime": "prep time",
   "cookTime": "cook time", 
-  "ingredients": [{"amount": "1 cup", "ingredient": "flour"}, ...],
+  "ingredients": [{"qty": "1", "unit": "cup", "ingredient": "flour"}, {"qty": "2", "unit": "Tbsp", "ingredient": "butter"}, ...],
   "instructions": ["Step 1 text", "Step 2 text", ...],
   "notes": "any notes or tips"
 }
+IMPORTANT: Split ingredients into separate qty (number only), unit (cup, Tbsp, tsp, oz, etc), and ingredient (the item name) fields.
+Use "Tbsp" (capitalized) for tablespoons to distinguish from "tsp".
+For ranges like "7-9 cups", put "7-9" in qty and "cups" in unit.
 Return ONLY valid JSON.` 
           }
         ]
@@ -130,10 +133,13 @@ Return ONLY valid JSON.`
   "servings": "yield",
   "prepTime": "prep time",
   "cookTime": "cook time", 
-  "ingredients": [{"amount": "1 cup", "ingredient": "flour"}, ...],
+  "ingredients": [{"qty": "1", "unit": "cup", "ingredient": "flour"}, {"qty": "2", "unit": "Tbsp", "ingredient": "butter"}, ...],
   "instructions": ["Step 1 text", "Step 2 text", ...],
   "notes": "any notes or tips"
 }
+IMPORTANT: Split ingredients into separate qty (number only), unit (cup, Tbsp, tsp, oz, etc), and ingredient (the item name) fields.
+Use "Tbsp" (capitalized) for tablespoons to distinguish from "tsp".
+For ranges like "7-9 cups", put "7-9" in qty and "cups" in unit.
 Return ONLY valid JSON.` 
           }
         ]
@@ -150,10 +156,13 @@ Return ONLY valid JSON.`
   "servings": "yield/servings",
   "prepTime": "prep time",
   "cookTime": "cook time", 
-  "ingredients": [{"amount": "1 cup", "ingredient": "flour"}, ...],
+  "ingredients": [{"qty": "1", "unit": "cup", "ingredient": "flour"}, {"qty": "2", "unit": "Tbsp", "ingredient": "butter"}, ...],
   "instructions": ["Step 1 text", "Step 2 text", ...],
   "notes": "any tips or notes from the recipe"
 }
+IMPORTANT: Split ingredients into separate qty (number only), unit (cup, Tbsp, tsp, oz, etc), and ingredient (the item name) fields.
+Use "Tbsp" (capitalized) for tablespoons to distinguish from "tsp".
+For ranges like "7-9 cups", put "7-9" in qty and "cups" in unit.
 Return ONLY valid JSON.
 
 Website content:

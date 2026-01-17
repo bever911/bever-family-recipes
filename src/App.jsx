@@ -1355,8 +1355,7 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
           </div>
         )}
 
-        {/* Admin tools - HIDDEN (all recipes normalized)
-            To re-enable: uncomment this section
+        {/* Admin tools - only visible when logged in as family */}
         {isFamily && (
           <div style={{ textAlign: 'center', marginTop: 32 }}>
             <button 
@@ -1376,6 +1375,7 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
             {showAdminTools && (
               <div style={{ marginTop: 16, padding: 20, background: '#f5f3ef', borderRadius: 4 }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'center', marginBottom: 12 }}>
+                  {/* Normalize Units - HIDDEN (all recipes normalized)
                   <button 
                     onClick={onNormalizeAll} 
                     disabled={isProcessing} 
@@ -1383,12 +1383,13 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
                   >
                     {isProcessing ? 'Processing...' : 'Normalize Units'}
                   </button>
+                  */}
                   <button 
                     onClick={onMigrateIngredients} 
                     disabled={isProcessing} 
                     style={styles.adminToolBtn}
                   >
-                    Migrate Ingredients
+                    {isProcessing ? 'Processing...' : 'Split Qty/Unit'}
                   </button>
                   {trashedCount > 0 && (
                     <button 
@@ -1401,13 +1402,12 @@ function HomePage({ recipes, filteredRecipes, categories, selectedCategory, setS
                   )}
                 </div>
                 <p style={{ fontSize: 11, color: '#7a7a7a', margin: 0 }}>
-                  Normalize: fix units & fractions • Migrate: convert to qty/unit/ingredient format
+                  Split Qty/Unit: Fix old scanned recipes where "4 cup" is in one column
                 </p>
               </div>
             )}
           </div>
         )}
-        */}
       </section>
     </div>
   );
@@ -2445,7 +2445,10 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
             {isFavorite ? '♥' : '♡'}
           </button>
           <button onClick={onShare} style={styles.actionBtn}>Share</button>
-          <button onClick={() => window.print()} style={styles.actionBtn}>Print</button>
+          <button onClick={() => {
+            setServingsMultiplier(1); // Reset to 1x for accurate print
+            setTimeout(() => window.print(), 100); // Brief delay to allow state update
+          }} style={styles.actionBtn}>Print</button>
           {isFamily && (
             <>
               <button onClick={onEdit} style={styles.actionBtn}>Edit</button>
@@ -2464,6 +2467,9 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
               style={styles.detailImage}
               onError={() => setImageError(true)}
             />
+            {recipe.imageCaption && (
+              <p style={styles.imageCaption}>{recipe.imageCaption}</p>
+            )}
           </div>
         )}
 
@@ -2479,6 +2485,7 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
               {recipe.prepTime && <span>Prep: {recipe.prepTime}</span>}
               {recipe.cookTime && <span>Cook: {recipe.cookTime}</span>}
               {recipe.servings && <span>Serves {recipe.servings}</span>}
+              {recipe.dateAdded && <span>Added: {formatDate(recipe.dateAdded)}</span>}
             </div>
             
             {/* Made It section - only for family */}
@@ -2591,7 +2598,7 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
 
           {/* Handwritten Recipe Card */}
           {recipe.handwrittenImageUrl && !handwrittenImageError && (
-            <section style={styles.handwrittenSection} className="no-print">
+            <section style={styles.handwrittenSection}>
               <h3 style={styles.handwrittenTitle}>Original Recipe Card</h3>
               <img 
                 src={recipe.handwrittenImageUrl}
@@ -2600,7 +2607,10 @@ function RecipeDetailPage({ recipe, categories, onEdit, onDelete, onBack, onAddC
                 onClick={() => setShowHandwrittenModal(true)}
                 onError={() => setHandwrittenImageError(true)}
               />
-              <p style={styles.handwrittenHint}>Click to enlarge</p>
+              {recipe.handwrittenImageCaption && (
+                <p style={styles.handwrittenCaption}>{recipe.handwrittenImageCaption}</p>
+              )}
+              <p style={styles.handwrittenHint} className="no-print">Click to enlarge</p>
             </section>
           )}
 
@@ -3588,8 +3598,20 @@ const styles = {
     letterSpacing: 0.5,
   },
   recipeDetail: { background: 'white', border: '1px solid #e8e6e2', overflow: 'hidden' },
-  detailImageWrap: { height: 400, overflow: 'hidden' },
+  detailImageWrap: { height: 400, overflow: 'hidden', position: 'relative' },
   detailImage: { width: '100%', height: '100%', objectFit: 'cover' },
+  imageCaption: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: '8px 16px',
+    background: 'rgba(0,0,0,0.5)',
+    color: 'white',
+    fontSize: 13,
+    fontStyle: 'italic',
+    textAlign: 'center',
+  },
   detailContent: { padding: 48 },
   detailHeader: { textAlign: 'center', marginBottom: 32 },
   detailCategory: {
@@ -3792,6 +3814,13 @@ const styles = {
     fontSize: 11,
     color: '#8a8a8a',
     marginTop: 8,
+  },
+  handwrittenCaption: {
+    fontSize: 13,
+    color: '#5a5a5a',
+    fontStyle: 'italic',
+    marginTop: 8,
+    textAlign: 'center',
   },
 
   modal: {
@@ -4340,6 +4369,27 @@ if (typeof window !== 'undefined') {
       /* Hide divider on print */
       div[style*="detailDivider"] {
         margin: 16px 0 !important;
+      }
+      
+      /* Handwritten recipe card print styles */
+      section[style*="handwrittenSection"] {
+        margin-top: 24px !important;
+        page-break-inside: avoid;
+        text-align: center;
+      }
+      
+      section[style*="handwrittenSection"] img {
+        max-width: 250px !important;
+        max-height: 180px !important;
+      }
+      
+      /* Image captions */
+      p[style*="imageCaption"] {
+        position: static !important;
+        background: none !important;
+        color: #5a5a5a !important;
+        padding: 4px 0 !important;
+        font-size: 11px !important;
       }
       
       /* Ensure single page fit */

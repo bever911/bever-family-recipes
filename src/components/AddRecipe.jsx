@@ -8,7 +8,46 @@ import {
   EMPTY_RECIPE, 
   MAX_FILE_SIZE 
 } from '../utils/constants';
-import { normalizeUnit, callRecipeAI, validateFileSize } from '../utils/helpers';
+import { normalizeUnit, callRecipeAI, validateFileSize, parseIngredientString } from '../utils/helpers';
+
+// Convert old-format ingredients to new format
+const convertIngredients = (ingredients) => {
+  if (!ingredients || !Array.isArray(ingredients)) {
+    return [{ qty: '', unit: '', ingredient: '' }];
+  }
+  
+  return ingredients.map(ing => {
+    // Already new format
+    if (ing.qty !== undefined || (ing.unit !== undefined && ing.ingredient !== undefined && ing.amount === undefined)) {
+      return { 
+        qty: ing.qty || '', 
+        unit: ing.unit || '', 
+        ingredient: ing.ingredient || '' 
+      };
+    }
+    
+    // Old format: { amount: "4 cup", ingredient: "flour" }
+    // Need to parse the amount field
+    const amountStr = ing.amount || '';
+    const parsed = parseIngredientString(amountStr);
+    
+    return {
+      qty: parsed.quantity || '',
+      unit: parsed.unit || '',
+      ingredient: parsed.item || ing.ingredient || ''
+    };
+  });
+};
+
+// Prepare recipe for editing (convert old formats)
+const prepareRecipeForEdit = (recipe) => {
+  if (!recipe) return EMPTY_RECIPE;
+  
+  return {
+    ...recipe,
+    ingredients: convertIngredients(recipe.ingredients)
+  };
+};
 
 export default function AddRecipe({
   recipe,
@@ -17,7 +56,7 @@ export default function AddRecipe({
   showNotification,
   recipes // For duplicate detection
 }) {
-  const [formData, setFormData] = useState(recipe || EMPTY_RECIPE);
+  const [formData, setFormData] = useState(prepareRecipeForEdit(recipe));
   const [activeTab, setActiveTab] = useState('manual');
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(recipe?.imageUrl || null);

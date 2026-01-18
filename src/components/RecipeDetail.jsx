@@ -67,6 +67,37 @@ export default function RecipeDetail({
   };
 
   // Format ingredient for display
+  // Helper to parse qty string that might be a fraction
+  const parseQtyString = (qtyStr) => {
+    if (!qtyStr) return 0;
+    
+    // Check for unicode fractions first
+    for (const [frac, dec] of Object.entries(FRACTION_MAP)) {
+      if (qtyStr.includes(frac)) {
+        const parts = qtyStr.split(frac);
+        const whole = parts[0] ? parseFloat(parts[0]) || 0 : 0;
+        return whole + dec;
+      }
+    }
+    
+    // Check for slash fractions like "3/4" or "1 1/2"
+    const mixedMatch = qtyStr.match(/^(\d+)\s+(\d+)\/(\d+)$/);
+    if (mixedMatch) {
+      const whole = parseFloat(mixedMatch[1]);
+      const num = parseFloat(mixedMatch[2]);
+      const den = parseFloat(mixedMatch[3]);
+      return whole + (num / den);
+    }
+    
+    const fractionMatch = qtyStr.match(/^(\d+)\/(\d+)$/);
+    if (fractionMatch) {
+      return parseFloat(fractionMatch[1]) / parseFloat(fractionMatch[2]);
+    }
+    
+    // Regular number
+    return parseFloat(qtyStr) || 0;
+  };
+
   const formatIngredient = (ing, multiplier = 1) => {
     // New format: {qty, unit, ingredient}
     if (ing.qty !== undefined) {
@@ -87,8 +118,9 @@ export default function RecipeDetail({
           displayQty = `${formatQtyDisplay(low)}${separator}${formatQtyDisplay(high)}`;
         }
       } else if (qtyStr) {
-        const scaledQty = parseFloat(qtyStr) * multiplier;
-        displayQty = isNaN(scaledQty) ? qtyStr : formatQtyDisplay(scaledQty);
+        const parsedQty = parseQtyString(qtyStr);
+        const scaledQty = parsedQty * multiplier;
+        displayQty = scaledQty > 0 ? formatQtyDisplay(scaledQty) : qtyStr;
       }
       
       return {

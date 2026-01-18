@@ -536,20 +536,32 @@ export default function AddRecipe({
               </div>
             </div>
 
-            {/* Source URL for external recipes */}
-            {!formData.authorIsFamily && (
-              <div style={styles.fieldGroup}>
-                <label style={styles.fieldLabel}>Source URL</label>
-                <input
-                  type="url"
-                  value={formData.sourceUrl || ''}
-                  onChange={(e) => updateField('sourceUrl', e.target.value)}
-                  placeholder="https://..."
-                  style={styles.input}
-                />
-                <p style={styles.fieldHint}>Link to the original recipe</p>
-              </div>
-            )}
+            {/* Source URL for all recipes */}
+            <div style={styles.fieldGroup}>
+              <label style={styles.fieldLabel}>Source URL</label>
+              <input
+                type="url"
+                value={formData.sourceUrl || ''}
+                onChange={(e) => updateField('sourceUrl', e.target.value)}
+                placeholder="https://..."
+                style={styles.input}
+              />
+              <p style={styles.fieldHint}>Link to where you found or adapted this recipe (optional)</p>
+            </div>
+
+            {/* Show in author filter checkbox */}
+            <div style={{...styles.fieldGroup, display: 'flex', alignItems: 'center', gap: 12}}>
+              <input
+                type="checkbox"
+                id="showInAuthorFilter"
+                checked={formData.showInAuthorFilter !== false}
+                onChange={(e) => updateField('showInAuthorFilter', e.target.checked)}
+                style={{width: 18, height: 18, cursor: 'pointer'}}
+              />
+              <label htmlFor="showInAuthorFilter" style={{...styles.fieldLabel, margin: 0, cursor: 'pointer'}}>
+                Include in author filter on homepage
+              </label>
+            </div>
           </div>
 
           {/* Ingredients */}

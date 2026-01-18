@@ -443,7 +443,11 @@ export default function App() {
   }, [activeRecipes, debouncedSearch, selectedCategory, selectedAuthor, sortBy, showFavoritesOnly, favorites]);
 
   const uniqueAuthors = useMemo(() => {
-    const authors = [...new Set(activeRecipes.map(r => r.author).filter(Boolean))];
+    const authors = [...new Set(
+      activeRecipes
+        .filter(r => r.author && r.showInAuthorFilter !== false) // Only include if showInAuthorFilter is true or undefined
+        .map(r => r.author)
+    )];
     return authors.sort();
   }, [activeRecipes]);
 

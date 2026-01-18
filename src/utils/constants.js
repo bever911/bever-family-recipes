@@ -46,6 +46,7 @@ export const EMPTY_RECIPE = {
   category: '',
   author: '',
   authorIsFamily: true,
+  showInAuthorFilter: true, // Whether this author appears in homepage filter
   servings: '',
   prepTime: '',
   cookTime: '',
@@ -57,7 +58,7 @@ export const EMPTY_RECIPE = {
   imageCaption: '',
   handwrittenImageUrl: '',
   handwrittenImageCaption: '',
-  sourceUrl: '', // NEW: Track where imported recipes came from
+  sourceUrl: '', // Track where recipe came from (works for all recipe types)
   dateAdded: '',
   trashedAt: null,
   comments: [],

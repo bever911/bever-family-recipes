@@ -205,11 +205,11 @@ export const validateFileSize = (file, showNotification) => {
 // ============================================
 // AI API CALL
 // ============================================
-export const callRecipeAI = async (action, data) => {
+export const callRecipeAI = async (type, data) => {
   const response = await fetch('/.netlify/functions/recipe-ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, ...data }),
+    body: JSON.stringify({ type, ...data }),
   });
   
   if (!response.ok) {

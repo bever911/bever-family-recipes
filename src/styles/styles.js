@@ -294,11 +294,14 @@ export const styles = {
     overflow: 'hidden',
     position: 'relative',
     background: colors.linen,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   cardImage: {
     width: '100%',
     height: '100%',
-    objectFit: 'cover',
+    objectFit: 'contain',
     transition: 'transform 0.3s',
   },
   cardPlaceholder: {

@@ -45,6 +45,15 @@ export default function RecipeCard({
             loading="lazy"
             onError={() => setImageError(true)}
           />
+        ) : recipe.handwrittenImageUrl && !imageError ? (
+          <img
+            src={recipe.handwrittenImageUrl}
+            alt={`${recipe.title} - handwritten recipe`}
+            style={styles.cardImage}
+            className="card-image"
+            loading="lazy"
+            onError={() => setImageError(true)}
+          />
         ) : (
           <div style={styles.cardPlaceholder}>
             <span style={styles.placeholderIcon}>✦</span>

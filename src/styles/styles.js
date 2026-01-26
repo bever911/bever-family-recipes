@@ -434,11 +434,16 @@ export const styles = {
     height: 400,
     overflow: 'hidden',
     position: 'relative',
+    background: colors.linen,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   detailImage: {
     width: '100%',
     height: '100%',
-    objectFit: 'cover',
+    objectFit: 'contain',
+    background: colors.linen,
   },
   imageCaption: {
     position: 'absolute',
